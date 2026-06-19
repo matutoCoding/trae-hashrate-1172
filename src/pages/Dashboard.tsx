@@ -24,6 +24,9 @@ const Dashboard: React.FC = () => {
   const conflicts = useActiveConflicts();
   const results = useAppStore(state => state.results);
   const currentCalledEntry = useAppStore(state => state.currentCalledEntry);
+  
+  const publishedResults = results.filter(r => r.published);
+  const publishedEventCount = new Set(publishedResults.map(r => r.eventId)).size;
 
   const stats = [
     { 
@@ -41,11 +44,11 @@ const Dashboard: React.FC = () => {
       change: '实时更新'
     },
     { 
-      label: '已完成项目', 
-      value: results.length / 8, 
+      label: '已发布成绩', 
+      value: publishedEventCount, 
       icon: Trophy, 
       color: 'from-success to-emerald-400',
-      change: '更新于 5 分钟前'
+      change: results.length > 0 ? `还有 ${new Set(results.map(r => r.eventId)).size - publishedEventCount} 个项目待发布` : '更新于 5 分钟前'
     },
     { 
       label: '待处理冲突', 

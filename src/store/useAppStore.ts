@@ -51,9 +51,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addEvent: (event: Omit<Event, 'id'>) => {
+    const newEvent: Event = { ...event, id: generateId() };
     set(state => ({
-      events: [...state.events, { ...event, id: generateId() }]
+      events: [...state.events, newEvent]
     }));
+    return newEvent;
   },
 
   createSchedule: (schedule: Omit<Schedule, 'id'>) => {
@@ -204,7 +206,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const newResult: Result = {
       ...result,
       id: generateId(),
-      rank: 0
+      rank: 0,
+      published: result.published ?? false
     };
     
     set(state => ({
@@ -245,6 +248,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (eventId) {
       get().calculateRanks(eventId);
     }
+  },
+
+  publishResults: (eventId: string) => {
+    set(state => ({
+      results: state.results.map(r => 
+        r.eventId === eventId 
+          ? { ...r, published: true, publishedAt: new Date() }
+          : r
+      )
+    }));
+  },
+
+  unpublishResults: (eventId: string) => {
+    set(state => ({
+      results: state.results.map(r => 
+        r.eventId === eventId 
+          ? { ...r, published: false, publishedAt: undefined }
+          : r
+      )
+    }));
   },
 
   calculateRanks: (eventId: string) => {

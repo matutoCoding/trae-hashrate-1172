@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Users, Check, X, Volume2, SkipForward, UserPlus, Maximize2 } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Users, Check, X, Volume2, SkipForward, UserPlus, Maximize2, CheckSquare, Square, ListChecks, ArrowUpCircle } from 'lucide-react';
 import { useAppStore, useQueueWithDetails } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
-import { QueueStatus, Priority, Event } from '@/types';
+import { QueueStatus, Priority, Event, Athlete } from '@/types';
 import { formatRelativeTime } from '@/utils/time';
 
 const CheckIn: React.FC = () => {
@@ -19,6 +19,9 @@ const CheckIn: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAthlete, setSelectedAthlete] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
+  const [isSubstituteModalOpen, setIsSubstituteModalOpen] = useState(false);
+  const [selectedSubstituteAthlete, setSelectedSubstituteAthlete] = useState<string>('');
 
   const waitingEntries = queueEntries.filter(q => 
     q.status === QueueStatus.WAITING && 
@@ -63,6 +66,65 @@ const CheckIn: React.FC = () => {
     
     setIsAddModalOpen(false);
     setSelectedAthlete('');
+  };
+
+  const currentEventEntries = useMemo(() => {
+    if (!selectedEvent) return queueEntries;
+    return queueEntries.filter(q => q.eventId === selectedEvent);
+  }, [queueEntries, selectedEvent]);
+
+  const availableSubstituteAthletes = useMemo(() => {
+    if (!selectedEvent) return [];
+    const inQueueIds = new Set(queueEntries.filter(q => q.eventId === selectedEvent).map(q => q.athleteId));
+    return athletes.filter(a => !inQueueIds.has(a.id)).slice(0, 50);
+  }, [athletes, queueEntries, selectedEvent]);
+
+  const toggleEntrySelection = (entryId: string) => {
+    const newSelection = new Set(selectedEntryIds);
+    if (newSelection.has(entryId)) {
+      newSelection.delete(entryId);
+    } else {
+      newSelection.add(entryId);
+    }
+    setSelectedEntryIds(newSelection);
+  };
+
+  const toggleSelectAll = () => {
+    const waitingIds = currentEventEntries.filter(e => e.status === QueueStatus.WAITING).map(e => e.id);
+    if (waitingIds.every(id => selectedEntryIds.has(id))) {
+      setSelectedEntryIds(new Set());
+    } else {
+      setSelectedEntryIds(new Set(waitingIds));
+    }
+  };
+
+  const batchMarkCheckedIn = () => {
+    selectedEntryIds.forEach(id => {
+      updateQueueStatus(id, QueueStatus.CHECKED_IN);
+    });
+    setSelectedEntryIds(new Set());
+  };
+
+  const batchMarkMissed = () => {
+    selectedEntryIds.forEach(id => {
+      updateQueueStatus(id, QueueStatus.MISSED);
+    });
+    setSelectedEntryIds(new Set());
+  };
+
+  const handleSubstitute = () => {
+    const athlete = athletes.find(a => a.id === selectedSubstituteAthlete);
+    if (!athlete || !selectedEvent) return;
+    
+    addToQueue({
+      eventId: selectedEvent,
+      athleteId: athlete.id,
+      athlete,
+      priority: Priority.NORMAL
+    });
+    
+    setIsSubstituteModalOpen(false);
+    setSelectedSubstituteAthlete('');
   };
 
   const getEventName = (event: Event) => {
@@ -311,6 +373,155 @@ const CheckIn: React.FC = () => {
         </div>
       </div>
 
+      <div className="card p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <ListChecks className="text-primary-600" size={24} />
+            <h3 className="font-semibold text-slate-800 text-lg">
+              分组名单
+              {selectedEvent && events.find(e => e.id === selectedEvent) && (
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  - {getEventName(events.find(e => e.id === selectedEvent)!)}
+                </span>
+              )}
+            </h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={toggleSelectAll}
+              className="btn-secondary !py-1.5 !px-3 !text-xs"
+            >
+              {currentEventEntries.filter(e => e.status === QueueStatus.WAITING).every(id => selectedEntryIds.has(id.id)) && currentEventEntries.some(e => e.status === QueueStatus.WAITING) ? (
+                <><CheckSquare size={14} /> 取消全选</>
+              ) : (
+                <><Square size={14} /> 全选等待中</>
+              )}
+            </button>
+            <button 
+              onClick={batchMarkCheckedIn}
+              disabled={selectedEntryIds.size === 0}
+              className="btn-primary !py-1.5 !px-3 !text-xs"
+            >
+              <Check size={14} />
+              批量标记到场 ({selectedEntryIds.size})
+            </button>
+            <button 
+              onClick={batchMarkMissed}
+              disabled={selectedEntryIds.size === 0}
+              className="btn-secondary !py-1.5 !px-3 !text-xs"
+            >
+              <X size={14} />
+              批量标记缺席
+            </button>
+            <button 
+              onClick={() => { setIsSubstituteModalOpen(true); setSelectedSubstituteAthlete(''); }}
+              className="btn-secondary !py-1.5 !px-3 !text-xs"
+            >
+              <ArrowUpCircle size={14} />
+              替补上场
+            </button>
+          </div>
+        </div>
+
+        {!selectedEvent ? (
+          <div className="text-center py-12 bg-slate-50 rounded-xl">
+            <Users className="mx-auto text-slate-300 mb-3" size={48} />
+            <p className="text-slate-500">请先在顶部选择一个项目查看分组名单</p>
+          </div>
+        ) : currentEventEntries.length === 0 ? (
+          <div className="text-center py-12 bg-slate-50 rounded-xl">
+            <Users className="mx-auto text-slate-300 mb-3" size={48} />
+            <p className="text-slate-500">该项目暂无检录人员</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="text-left p-3 border-b border-slate-200 w-12">选择</th>
+                  <th className="text-left p-3 border-b border-slate-200 w-20">序号</th>
+                  <th className="text-left p-3 border-b border-slate-200 w-28">号码</th>
+                  <th className="text-left p-3 border-b border-slate-200">运动员</th>
+                  <th className="text-left p-3 border-b border-slate-200">代表队</th>
+                  <th className="text-left p-3 border-b border-slate-200 w-24">优先级</th>
+                  <th className="text-left p-3 border-b border-slate-200 w-28">状态</th>
+                  <th className="text-left p-3 border-b border-slate-200 w-48">入队时间</th>
+                  <th className="text-left p-3 border-b border-slate-200 w-32 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentEventEntries.map((entry, idx) => (
+                  <tr key={entry.id} className={`hover:bg-slate-50 transition-colors ${selectedEntryIds.has(entry.id) ? 'bg-primary-50' : ''}`}>
+                    <td className="p-3 border-b border-slate-100">
+                      {entry.status === QueueStatus.WAITING && (
+                        <button 
+                          onClick={() => toggleEntrySelection(entry.id)}
+                          className="text-primary-600 hover:text-primary-700"
+                        >
+                          {selectedEntryIds.has(entry.id) ? <CheckSquare size={18} /> : <Square size={18} />}
+                        </button>
+                      )}
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <span className="font-mono text-slate-600">{entry.position || idx + 1}</span>
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <span className="font-mono font-bold text-slate-800">{entry.athlete.bibNumber}</span>
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <span className="font-medium text-slate-800">{entry.athlete.name}</span>
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <span className="text-slate-600">{entry.athlete.team}</span>
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <StatusBadge type="priority" status={entry.priority} size="sm" />
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <StatusBadge type="queue" status={entry.status} size="sm" />
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <span className="text-slate-500 text-xs">{formatRelativeTime(entry.joinTime)}</span>
+                    </td>
+                    <td className="p-3 border-b border-slate-100">
+                      <div className="flex items-center justify-end gap-1">
+                        {entry.status === QueueStatus.WAITING && (
+                          <>
+                            <button 
+                              onClick={() => updateQueueStatus(entry.id, QueueStatus.CHECKED_IN)}
+                              className="p-1.5 rounded hover:bg-success/10 text-success"
+                              title="到场"
+                            >
+                              <Check size={14} />
+                            </button>
+                            <button 
+                              onClick={() => updateQueueStatus(entry.id, QueueStatus.MISSED)}
+                              className="p-1.5 rounded hover:bg-warning/10 text-warning"
+                              title="缺席"
+                            >
+                              <X size={14} />
+                            </button>
+                          </>
+                        )}
+                        {entry.status === QueueStatus.CALLED && (
+                          <button 
+                            onClick={() => updateQueueStatus(entry.id, QueueStatus.CHECKED_IN)}
+                            className="p-1.5 rounded hover:bg-success/10 text-success"
+                            title="检录"
+                          >
+                            <Check size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <Modal 
         isOpen={isAddModalOpen} 
         onClose={() => { setIsAddModalOpen(false); setSelectedAthlete(''); }}
@@ -360,6 +571,63 @@ const CheckIn: React.FC = () => {
               className="btn-primary"
             >
               确认入队
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isSubstituteModalOpen} 
+        onClose={() => { setIsSubstituteModalOpen(false); setSelectedSubstituteAthlete(''); }}
+        title="替补上场"
+      >
+        <div className="space-y-4">
+          {!selectedEvent ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-sm text-amber-800">请先在顶部选择一个项目，再添加替补运动员</p>
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="label">当前项目</label>
+                <div className="p-3 bg-slate-50 rounded-lg text-sm font-medium text-slate-800">
+                  {events.find(e => e.id === selectedEvent) ? getEventName(events.find(e => e.id === selectedEvent)!) : '-'}
+                </div>
+              </div>
+              <div>
+                <label className="label">选择替补运动员</label>
+                <select 
+                  value={selectedSubstituteAthlete}
+                  onChange={e => setSelectedSubstituteAthlete(e.target.value)}
+                  className="input"
+                >
+                  <option value="">请选择替补运动员</option>
+                  {availableSubstituteAthletes.map(athlete => (
+                    <option key={athlete.id} value={athlete.id}>
+                      {athlete.bibNumber} - {athlete.name} ({athlete.team})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500 mt-1">
+                  仅显示未在该项目检录队列中的运动员
+                </p>
+              </div>
+            </>
+          )}
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <button 
+              onClick={() => { setIsSubstituteModalOpen(false); setSelectedSubstituteAthlete(''); }}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button 
+              onClick={handleSubstitute}
+              disabled={!selectedEvent || !selectedSubstituteAthlete}
+              className="btn-primary"
+            >
+              <ArrowUpCircle size={18} />
+              确认替补
             </button>
           </div>
         </div>

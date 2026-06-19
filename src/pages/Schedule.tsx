@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle, PlusCircle, Building, Target, ChevronDown, ChevronRight, AlertTriangle, CheckCircle } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle, PlusCircle, Building, Target, ChevronDown, ChevronRight, AlertTriangle, CheckCircle, Users, LayoutGrid, Eye } from 'lucide-react';
 import { useAppStore, useSchedulesWithDetails, useTracksWithVenue } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
-import { ScheduleStatus, Event, Venue, Track } from '@/types';
+import { ScheduleStatus, Event, Venue, Track, Athlete } from '@/types';
 import { formatTime, formatDate, createDateTime } from '@/utils/time';
 import { isTimeOverlap } from '@/utils/conflict';
 
@@ -12,15 +12,18 @@ const Schedule: React.FC = () => {
   const tracks = useTracksWithVenue();
   const venues = useAppStore(state => state.venues);
   const events = useAppStore(state => state.events);
+  const athletes = useAppStore(state => state.athletes);
   const createSchedule = useAppStore(state => state.createSchedule);
   const cancelSchedule = useAppStore(state => state.cancelSchedule);
   const updateSchedule = useAppStore(state => state.updateSchedule);
   const addVenue = useAppStore(state => state.addVenue);
   const addTrack = useAppStore(state => state.addTrack);
+  const addToQueue = useAppStore(state => state.addToQueue);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isVenueModalOpen, setIsVenueModalOpen] = useState(false);
   const [isTrackModalOpen, setIsTrackModalOpen] = useState(false);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [selectedTrack, setSelectedTrack] = useState('');
@@ -39,6 +42,85 @@ const Schedule: React.FC = () => {
   const [venueFormError, setVenueFormError] = useState('');
   const [trackFormError, setTrackFormError] = useState('');
 
+  // 批量分组状态
+  const [batchEventId, setBatchEventId] = useState('');
+  const [batchDate, setBatchDate] = useState(formatDate(new Date()));
+  const [batchStartTrackId, setBatchStartTrackId] = useState('');
+  const [batchStartTime, setBatchStartTime] = useState('09:00');
+  const [batchAthletesPerHeat, setBatchAthletesPerHeat] = useState(8);
+  const [batchHeatDuration, setBatchHeatDuration] = useState(15);
+  const [batchGapMinutes, setBatchGapMinutes] = useState(5);
+  const [batchSelectedAthleteIds, setBatchSelectedAthleteIds] = useState<Set<string>>(new Set());
+  const [batchPreviewGenerated, setBatchPreviewGenerated] = useState(false);
+
+  interface HeatPreview {
+    heatNumber: number;
+    trackId: string;
+    startTime: string;
+    endTime: string;
+    athletes: Athlete[];
+    hasConflict: boolean;
+    conflictReason?: string;
+  }
+
+  const toggleBatchAthlete = (athleteId: string) => {
+    const next = new Set(batchSelectedAthleteIds);
+    if (next.has(athleteId)) next.delete(athleteId);
+    else next.add(athleteId);
+    setBatchSelectedAthleteIds(next);
+    setBatchPreviewGenerated(false);
+  };
+
+  const toggleBatchSelectAllAthletes = () => {
+    if (batchSelectedAthleteIds.size === athletes.length) {
+      setBatchSelectedAthleteIds(new Set());
+    } else {
+      setBatchSelectedAthleteIds(new Set(athletes.map(a => a.id)));
+    }
+    setBatchPreviewGenerated(false);
+  };
+
+  const resetBatchForm = () => {
+    setBatchEventId('');
+    setBatchDate(formatDate(new Date()));
+    setBatchStartTrackId('');
+    setBatchStartTime('09:00');
+    setBatchAthletesPerHeat(8);
+    setBatchHeatDuration(15);
+    setBatchGapMinutes(5);
+    setBatchSelectedAthleteIds(new Set());
+    setBatchPreviewGenerated(false);
+  };
+
+  const confirmBatchCreate = () => {
+    const validHeats = batchPreviews.filter(p => !p.hasConflict);
+    const event = events.find(e => e.id === batchEventId);
+    if (!event) return;
+
+    validHeats.forEach(heat => {
+      createSchedule({
+        eventId: event.id,
+        trackId: heat.trackId,
+        startTime: createDateTime(batchDate, heat.startTime),
+        endTime: createDateTime(batchDate, heat.endTime),
+        status: ScheduleStatus.SCHEDULED
+      });
+      
+      // 同时把运动员加入该项目检录队列
+      heat.athletes.forEach(athlete => {
+        addToQueue({
+          eventId: event.id,
+          athleteId: athlete.id,
+          athlete,
+          priority: 'NORMAL' as any
+        });
+      });
+    });
+
+    setIsBatchModalOpen(false);
+    resetBatchForm();
+  };
+
   const [draggingSchedule, setDraggingSchedule] = useState<{
     id: string;
     trackId: string;
@@ -53,6 +135,93 @@ const Schedule: React.FC = () => {
   const runningTracks = tracks.filter(t => t.type === 'running');
   const fieldTracks = tracks.filter(t => t.type === 'field');
   const activeSchedules = schedules.filter(s => s.status !== ScheduleStatus.CANCELLED);
+
+  const getEventName = (event: Event) => {
+    const genderLabel = event.gender === 'male' ? '男子' : event.gender === 'female' ? '女子' : '混合';
+    return `${genderLabel} ${event.name}`;
+  };
+
+  const batchPreviews = useMemo<HeatPreview[]>(() => {
+    if (!batchPreviewGenerated || !batchEventId || !batchStartTrackId || batchSelectedAthleteIds.size === 0) return [];
+    
+    const selectedAthletes = athletes.filter(a => batchSelectedAthleteIds.has(a.id));
+    if (selectedAthletes.length === 0) return [];
+
+    const selectedTracks = runningTracks;
+    const numHeats = Math.ceil(selectedAthletes.length / batchAthletesPerHeat);
+    
+    const startParts = batchStartTime.split(':').map(Number);
+    let currentMinutes = startParts[0] * 60 + startParts[1];
+    
+    const startTrackIdx = selectedTracks.findIndex(t => t.id === batchStartTrackId);
+    if (startTrackIdx === -1) return [];
+
+    const previews: HeatPreview[] = [];
+    let athleteIdx = 0;
+
+    for (let h = 0; h < numHeats; h++) {
+      const heatAthletes = selectedAthletes.slice(athleteIdx, athleteIdx + batchAthletesPerHeat);
+      athleteIdx += batchAthletesPerHeat;
+
+      const trackIdx = startTrackIdx + (h % Math.max(1, selectedTracks.length - startTrackIdx));
+      const track = selectedTracks[trackIdx];
+      if (!track) continue;
+      
+      const heatStart = currentMinutes;
+      const heatEnd = heatStart + batchHeatDuration;
+
+      const minsToStr = (m: number) => {
+        const hrs = Math.floor(m / 60) % 24;
+        const mins = m % 60;
+        return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+      };
+
+      const startStr = minsToStr(heatStart);
+      const endStr = minsToStr(heatEnd);
+
+      let hasConflict = false;
+      let conflictReason = '';
+      const heatStartDate = createDateTime(batchDate, startStr);
+      const heatEndDate = createDateTime(batchDate, endStr);
+
+      for (const s of activeSchedules) {
+        if (s.trackId === track.id && s.status !== ScheduleStatus.CANCELLED) {
+          if (isTimeOverlap(heatStartDate, heatEndDate, s.startTime, s.endTime)) {
+            hasConflict = true;
+            const eventName = s.event ? getEventName(s.event) : '未知项目';
+            conflictReason = `与 ${eventName} (${formatTime(s.startTime)}-${formatTime(s.endTime)}) 时间冲突`;
+            break;
+          }
+        }
+      }
+
+      for (const p of previews) {
+        if (p.trackId === track.id) {
+          const pStart = createDateTime(batchDate, p.startTime);
+          const pEnd = createDateTime(batchDate, p.endTime);
+          if (isTimeOverlap(heatStartDate, heatEndDate, pStart, pEnd)) {
+            hasConflict = true;
+            conflictReason = `与第 ${p.heatNumber} 组在 ${track.name} 时间冲突`;
+            break;
+          }
+        }
+      }
+
+      previews.push({
+        heatNumber: h + 1,
+        trackId: track.id,
+        startTime: startStr,
+        endTime: endStr,
+        athletes: heatAthletes,
+        hasConflict,
+        conflictReason
+      });
+
+      currentMinutes = heatEnd + batchGapMinutes;
+    }
+
+    return previews;
+  }, [batchPreviewGenerated, batchEventId, batchStartTrackId, batchStartTime, batchDate, batchAthletesPerHeat, batchHeatDuration, batchGapMinutes, batchSelectedAthleteIds, athletes, activeSchedules, runningTracks]);
 
   const TIMELINE_START_HOUR = 6;
   const TIMELINE_END_HOUR = 22;
@@ -351,10 +520,19 @@ const Schedule: React.FC = () => {
               时间轴
             </button>
           </div>
-          <button className="btn-primary" onClick={() => setIsModalOpen(true)}>
-            <Plus size={20} />
-            新建排期
-          </button>
+          <div className="flex items-center gap-2">
+            <button 
+              className="btn-secondary" 
+              onClick={() => { setIsBatchModalOpen(true); resetBatchForm(); }}
+            >
+              <LayoutGrid size={18} />
+              批量分组排期
+            </button>
+            <button className="btn-primary" onClick={() => setIsModalOpen(true)}>
+              <Plus size={20} />
+              新建排期
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1053,6 +1231,209 @@ const Schedule: React.FC = () => {
             <button onClick={handleAddTrack} className="btn-primary">
               <Check size={18} />
               确认添加
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isBatchModalOpen} 
+        onClose={() => { setIsBatchModalOpen(false); resetBatchForm(); }}
+        title="批量分组排期"
+      >
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">选择项目</label>
+              <select 
+                value={batchEventId}
+                onChange={e => { setBatchEventId(e.target.value); setBatchPreviewGenerated(false); }}
+                className="input"
+              >
+                <option value="">请选择项目</option>
+                {events.map(event => (
+                  <option key={event.id} value={event.id}>
+                    {getEventName(event)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">比赛日期</label>
+              <input 
+                type="date" 
+                value={batchDate}
+                onChange={e => { setBatchDate(e.target.value); setBatchPreviewGenerated(false); }}
+                className="input"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">起始赛道</label>
+              <select 
+                value={batchStartTrackId}
+                onChange={e => { setBatchStartTrackId(e.target.value); setBatchPreviewGenerated(false); }}
+                className="input"
+              >
+                <option value="">请选择起始赛道</option>
+                {runningTracks.map(track => (
+                  <option key={track.id} value={track.id}>
+                    {track.venue?.name || '未知场地'} - {track.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">起始时间</label>
+              <input 
+                type="time" 
+                value={batchStartTime}
+                onChange={e => { setBatchStartTime(e.target.value); setBatchPreviewGenerated(false); }}
+                className="input"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="label">每组人数</label>
+              <input 
+                type="number" 
+                min={2}
+                max={50}
+                value={batchAthletesPerHeat}
+                onChange={e => { setBatchAthletesPerHeat(Number(e.target.value)); setBatchPreviewGenerated(false); }}
+                className="input"
+              />
+            </div>
+            <div>
+              <label className="label">每组时长（分钟）</label>
+              <input 
+                type="number" 
+                min={5}
+                max={120}
+                value={batchHeatDuration}
+                onChange={e => { setBatchHeatDuration(Number(e.target.value)); setBatchPreviewGenerated(false); }}
+                className="input"
+              />
+            </div>
+            <div>
+              <label className="label">组间间隔（分钟）</label>
+              <input 
+                type="number" 
+                min={0}
+                max={60}
+                value={batchGapMinutes}
+                onChange={e => { setBatchGapMinutes(Number(e.target.value)); setBatchPreviewGenerated(false); }}
+                className="input"
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="label !mb-0">选择参赛运动员</label>
+              <button 
+                onClick={toggleBatchSelectAllAthletes}
+                className="text-xs text-primary-600 hover:text-primary-700 font-medium"
+              >
+                {batchSelectedAthleteIds.size === athletes.length ? '取消全选' : '全选'}
+                （已选 {batchSelectedAthleteIds.size}/{athletes.length}）
+              </button>
+            </div>
+            <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1 bg-slate-50">
+              {athletes.map(athlete => (
+                <label key={athlete.id} className="flex items-center gap-2 p-1.5 hover:bg-white rounded cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={batchSelectedAthleteIds.has(athlete.id)}
+                    onChange={() => toggleBatchAthlete(athlete.id)}
+                    className="rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span className="text-sm text-slate-700">
+                    <span className="font-mono text-slate-500 mr-2">{athlete.bibNumber}</span>
+                    {athlete.name}
+                    <span className="text-slate-400 ml-2">({athlete.team})</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <button
+            onClick={() => setBatchPreviewGenerated(true)}
+            disabled={!batchEventId || !batchStartTrackId || batchSelectedAthleteIds.size === 0}
+            className="btn-secondary w-full justify-center"
+          >
+            <Eye size={18} />
+            预览分组
+          </button>
+
+          {batchPreviewGenerated && batchPreviews.length > 0 && (
+            <div className="border-t border-slate-100 pt-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-semibold text-slate-800">分组预览</h4>
+                <div className="text-xs text-slate-500">
+                  <span className="inline-flex items-center gap-1 mr-3"><CheckCircle size={12} className="text-success" /> 可保存 {batchPreviews.filter(p => !p.hasConflict).length} 组</span>
+                  <span className="inline-flex items-center gap-1"><AlertTriangle size={12} className="text-warning" /> 冲突 {batchPreviews.filter(p => p.hasConflict).length} 组</span>
+                </div>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-3 pr-1">
+                {batchPreviews.map(heat => (
+                  <div 
+                    key={heat.heatNumber} 
+                    className={`p-3 rounded-xl border ${heat.hasConflict ? 'bg-warning/5 border-warning/30' : 'bg-success/5 border-success/30'}`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold ${heat.hasConflict ? 'bg-warning text-white' : 'bg-success text-white'}`}>
+                          {heat.heatNumber}
+                        </span>
+                        <span className="font-medium text-slate-800">第 {heat.heatNumber} 组</span>
+                        <span className="text-xs text-slate-500">
+                          {tracks.find(t => t.id === heat.trackId)?.name}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-600 font-mono">
+                        {heat.startTime} - {heat.endTime}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mb-1">
+                      {heat.athletes.map(a => (
+                        <span key={a.id} className="inline-flex items-center px-2 py-0.5 bg-white rounded text-xs text-slate-700 border border-slate-200">
+                          <span className="font-mono text-slate-400 mr-1">{a.bibNumber}</span>
+                          {a.name}
+                        </span>
+                      ))}
+                    </div>
+                    {heat.hasConflict && (
+                      <p className="text-xs text-warning font-medium mt-1">
+                        <AlertTriangle size={12} className="inline mr-1" />
+                        {heat.conflictReason}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <button 
+              onClick={() => { setIsBatchModalOpen(false); resetBatchForm(); }}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button 
+              onClick={confirmBatchCreate}
+              disabled={batchPreviews.filter(p => !p.hasConflict).length === 0}
+              className="btn-primary"
+            >
+              <Check size={18} />
+              确认创建（{batchPreviews.filter(p => !p.hasConflict).length} 组）
             </button>
           </div>
         </div>

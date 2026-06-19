@@ -319,7 +319,9 @@ export function generateMockResults(events: Event[], athletes: Athlete[]): Resul
         resultUnit: event.name.includes('米') && !event.name.includes('跳') ? 's' : 'm',
         rank,
         status: EntryStatus.FINISHED,
-        notes: windSpeed !== undefined ? `风速 ${windSpeed}m/s` : undefined
+        notes: windSpeed !== undefined ? `风速 ${windSpeed}m/s` : undefined,
+        published: true,
+        publishedAt: new Date()
       });
     }
   }

@@ -52,6 +52,9 @@ export interface Event {
   type: EventType;
   gender: 'male' | 'female' | 'mixed';
   round: number;
+  roundName?: string;
+  parentEventId?: string;
+  totalAthletes?: number;
 }
 
 export interface Schedule {
@@ -102,6 +105,8 @@ export interface Result {
   rank: number;
   status: EntryStatus;
   notes?: string;
+  published: boolean;
+  publishedAt?: Date;
 }
 
 export interface AppState {
@@ -120,7 +125,6 @@ export interface AppState {
 export interface AppStore extends AppState {
   addVenue: (venue: Omit<Venue, 'id'>) => void;
   addTrack: (track: Omit<Track, 'id'>) => void;
-  addEvent: (event: Omit<Event, 'id'>) => void;
   createSchedule: (schedule: Omit<Schedule, 'id'>) => { success: boolean; conflicts?: Conflict[] };
   updateSchedule: (scheduleId: string, updates: Partial<Omit<Schedule, 'id'>>) => { success: boolean; conflicts?: Conflict[] };
   cancelSchedule: (scheduleId: string) => void;
@@ -136,11 +140,14 @@ export interface AppStore extends AppState {
   moveQueueEntryUp: (entryId: string) => void;
   moveQueueEntryDown: (entryId: string) => void;
   changeEntryPriority: (entryId: string, priority: Priority) => void;
-  
-  addResult: (result: Omit<Result, 'id'>) => void;
-  updateResult: (id: string, result: Partial<Omit<Result, 'id'>>) => void;
+
+  addResult: (result: Omit<Result, "id">) => void;
+  updateResult: (id: string, result: Partial<Omit<Result, "id">>) => void;
   deleteResult: (id: string) => void;
   calculateRanks: (eventId: string) => void;
-  
+  publishResults: (eventId: string) => void;
+  unpublishResults: (eventId: string) => void;
+  addEvent: (event: Omit<Event, "id">) => Event;
+
   initializeMockData: () => void;
 }

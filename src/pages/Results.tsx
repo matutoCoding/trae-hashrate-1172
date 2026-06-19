@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { Trophy, Medal, Award, Plus, Edit2, Trash2, Download, Filter, Upload, Info, CheckCircle, AlertCircle } from 'lucide-react';
+import { Trophy, Medal, Award, Plus, Edit2, Trash2, Download, Filter, Upload, Info, CheckCircle, AlertCircle, Eye, EyeOff, Send, RotateCcw, ChevronRight, ArrowRight, Users } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
-import { Result, Event, EventType, EntryStatus, Athlete } from '@/types';
+import { Result, Event, EventType, EntryStatus, Athlete, QueueStatus, Priority } from '@/types';
 
 interface PendingResult {
   athleteId: string;
@@ -34,6 +34,10 @@ const Results: React.FC = () => {
   const addResult = useAppStore(state => state.addResult);
   const updateResult = useAppStore(state => state.updateResult);
   const deleteResult = useAppStore(state => state.deleteResult);
+  const publishResults = useAppStore(state => state.publishResults);
+  const unpublishResults = useAppStore(state => state.unpublishResults);
+  const addEvent = useAppStore(state => state.addEvent);
+  const addQueueEntry = useAppStore(state => state.addToQueue);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
@@ -44,6 +48,11 @@ const Results: React.FC = () => {
   const [pendingResults, setPendingResults] = useState<PendingResult[]>([]);
   const [previewResults, setPreviewResults] = useState<PreviewResult[]>([]);
   const [batchStage, setBatchStage] = useState<'paste' | 'parse' | 'preview' | 'confirm'>('paste');
+  const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
+  const [advancingEventId, setAdvancingEventId] = useState<string>('');
+  const [advanceCount, setAdvanceCount] = useState<number>(8);
+  const [advanceMode, setAdvanceMode] = useState<'count' | 'percent'>('count');
+  const [nextRoundName, setNextRoundName] = useState<string>('');
   const [formData, setFormData] = useState({
     eventId: '',
     athleteId: '',
@@ -129,7 +138,8 @@ const Results: React.FC = () => {
       resultUnit: formData.resultUnit,
       rank: formData.rank,
       status: EntryStatus.FINISHED,
-      notes: formData.notes
+      notes: formData.notes,
+      published: false
     };
 
     if (editingResult) {
@@ -303,7 +313,8 @@ const Results: React.FC = () => {
         resultUnit: p.resultUnit,
         rank: 0,
         status: EntryStatus.FINISHED,
-        notes: p.notes
+        notes: p.notes,
+        published: false
       };
       
       if (existing) {
@@ -315,6 +326,52 @@ const Results: React.FC = () => {
     
     setIsBatchModalOpen(false);
     setBatchStage('confirm');
+  };
+
+  const advancingEvent = useMemo(() => events.find(e => e.id === advancingEventId), [events, advancingEventId]);
+  const advancingEventResults = useMemo(() => {
+    if (!advancingEventId) return [];
+    return resultsWithDetails.filter(r => r.eventId === advancingEventId);
+  }, [resultsWithDetails, advancingEventId]);
+
+  const advancingQualified = useMemo(() => {
+    if (advancingEventResults.length === 0) return [];
+    let count = advanceCount;
+    if (advanceMode === 'percent') {
+      count = Math.ceil(advancingEventResults.length * (advanceCount / 100));
+    }
+    count = Math.min(count, advancingEventResults.length);
+    return advancingEventResults.slice(0, count);
+  }, [advancingEventResults, advanceCount, advanceMode]);
+
+  const handleConfirmAdvance = () => {
+    if (!advancingEvent || advancingQualified.length === 0) return;
+
+    const baseName = advancingEvent.name.replace(/（第\d+轮）|\(第\d+轮\)/, '').trim();
+    const nextRound = advancingEvent.round + 1;
+    
+    const newEvent = addEvent({
+      name: nextRoundName || baseName,
+      type: advancingEvent.type,
+      gender: advancingEvent.gender,
+      round: nextRound,
+      roundName: nextRound === 2 ? '半决赛' : nextRound === 3 ? '决赛' : `第${nextRound}轮`,
+      parentEventId: advancingEvent.id,
+      totalAthletes: advancingQualified.length
+    });
+
+    advancingQualified.forEach((result, idx) => {
+      addQueueEntry({
+        eventId: newEvent.id,
+        athleteId: result.athleteId,
+        athlete: result.athlete!,
+        priority: Priority.NORMAL,
+        event: newEvent
+      });
+    });
+
+    setIsAdvanceModalOpen(false);
+    alert(`成功生成 ${nextRoundName}！共 ${advancingQualified.length} 名运动员晋级，已加入检录队列。`);
   };
 
   const getEventName = (event: Event) => {
@@ -347,7 +404,7 @@ const Results: React.FC = () => {
   const getTotalMedals = () => {
     const medalCounts: Record<string, { gold: number; silver: number; bronze: number; total: number }> = {};
     
-    results.forEach(result => {
+    results.filter(r => r.published).forEach(result => {
       const athlete = athletes.find(a => a.id === result.athleteId);
       if (!athlete) return;
       
@@ -474,6 +531,8 @@ const Results: React.FC = () => {
             Object.entries(groupedResults).map(([eventId, eventResults]) => {
               const event = eventResults[0].event;
               if (!event) return null;
+              const isPublished = eventResults.every(r => r.published);
+              const hasPartial = eventResults.some(r => r.published) && !isPublished;
 
               return (
                 <div key={eventId} className="mb-8 last:mb-0">
@@ -489,7 +548,66 @@ const Results: React.FC = () => {
                     }`}>
                       {event.type === EventType.TRACK ? '径赛' : '田赛'}
                     </span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${
+                      isPublished 
+                        ? 'bg-success/10 text-success' 
+                        : hasPartial
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      {isPublished ? (
+                        <><Eye size={12} /> 已发布</>
+                      ) : hasPartial ? (
+                        <><Info size={12} /> 部分发布</>
+                      ) : (
+                        <><EyeOff size={12} /> 未发布</>
+                      )}
+                    </span>
+                    <div className="ml-auto flex items-center gap-2">
+                      {event.round < 3 && eventResults.length >= 2 && (
+                        <button 
+                          onClick={() => { 
+                            setAdvancingEventId(eventId); 
+                            setAdvanceCount(event.type === EventType.TRACK ? 8 : 6);
+                            setAdvanceMode('count');
+                            const baseName = event.name.replace(/（第\d+轮）|\(第\d+轮\)/, '').trim();
+                            const nextRound = event.round + 1;
+                            const roundLabel = nextRound === 2 ? '半决赛' : nextRound === 3 ? '决赛' : `第${nextRound}轮`;
+                            setNextRoundName(`${baseName}（${roundLabel}）`);
+                            setIsAdvanceModalOpen(true); 
+                          }}
+                          className="btn-secondary !py-1.5 !px-3 !text-xs"
+                        >
+                          <ArrowRight size={14} />
+                          晋级下一轮
+                        </button>
+                      )}
+                      {!isPublished ? (
+                        <button 
+                          onClick={() => publishResults(eventId)}
+                          className="btn-primary !py-1.5 !px-3 !text-xs"
+                        >
+                          <Send size={14} />
+                          发布成绩
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => { if (window.confirm('撤回后将从奖牌榜移除，确定吗？')) unpublishResults(eventId); }}
+                          className="btn-secondary !py-1.5 !px-3 !text-xs"
+                        >
+                          <RotateCcw size={14} />
+                          撤回
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  
+                  {!isPublished && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 mb-4 text-sm text-amber-800 flex items-center gap-2">
+                      <Info size={14} />
+                      当前为未发布状态，仅管理员可见，发布后仪表板和奖牌榜同步更新
+                    </div>
+                  )}
                   
                   <div className="overflow-x-auto">
                     <table className="w-full">
@@ -999,6 +1117,138 @@ const Results: React.FC = () => {
               </div>
             </>
           )}
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isAdvanceModalOpen} 
+        onClose={() => setIsAdvanceModalOpen(false)}
+        title="晋级下一轮"
+        size="lg"
+      >
+        <div className="space-y-5">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <Users className="text-primary-600 flex-shrink-0 mt-0.5" size={20} />
+              <div>
+                <h4 className="font-semibold text-slate-800 mb-1">
+                  从 {advancingEvent ? getEventName(advancingEvent) : '-'} 晋级
+                </h4>
+                <p className="text-sm text-slate-600">
+                  选择晋级规则，确认后将生成下一轮项目并将晋级运动员加入检录队列。
+                  当前项目已发布成绩不会被修改。
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">下一轮项目名称</label>
+              <input 
+                type="text"
+                value={nextRoundName}
+                onChange={e => setNextRoundName(e.target.value)}
+                className="input"
+              />
+            </div>
+            <div>
+              <label className="label">晋级规则</label>
+              <div className="flex gap-2">
+                <select 
+                  value={advanceMode}
+                  onChange={e => setAdvanceMode(e.target.value as 'count' | 'percent')}
+                  className="input flex-shrink-0 w-28"
+                >
+                  <option value="count">按人数</option>
+                  <option value="percent">按比例</option>
+                </select>
+                <input 
+                  type="number"
+                  min={1}
+                  max={advanceMode === 'percent' ? 100 : advancingEventResults.length}
+                  value={advanceCount}
+                  onChange={e => setAdvanceCount(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="input"
+                />
+                <span className="flex items-center text-slate-500 text-sm">
+                  {advanceMode === 'count' ? '人' : '%'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="font-semibold text-slate-800">
+                晋级名单预览（共 {advancingQualified.length} 人）
+              </h4>
+              <span className="text-sm text-slate-500">
+                原项目总人数：{advancingEventResults.length}
+              </span>
+            </div>
+            <div className="max-h-[320px] overflow-y-auto border border-slate-200 rounded-lg">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-50">
+                  <tr>
+                    <th className="text-left p-3 border-b border-slate-200 w-20">原名次</th>
+                    <th className="text-left p-3 border-b border-slate-200">运动员</th>
+                    <th className="text-left p-3 border-b border-slate-200">号码</th>
+                    <th className="text-left p-3 border-b border-slate-200">代表队</th>
+                    <th className="text-left p-3 border-b border-slate-200">原成绩</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {advancingQualified.map((r, idx) => (
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="p-3 border-b border-slate-100">
+                        <div className="flex items-center gap-2">
+                          {getRankIcon(r.rank)}
+                          <span className="text-slate-500 text-xs">#{idx + 1}</span>
+                        </div>
+                      </td>
+                      <td className="p-3 border-b border-slate-100">
+                        <span className="font-medium text-slate-800">{r.athlete?.name}</span>
+                      </td>
+                      <td className="p-3 border-b border-slate-100 font-mono text-slate-600">
+                        {r.athlete?.bibNumber}
+                      </td>
+                      <td className="p-3 border-b border-slate-100 text-slate-600">
+                        {r.athlete?.team}
+                      </td>
+                      <td className="p-3 border-b border-slate-100 font-mono font-bold text-slate-800">
+                        {formatResult(r.resultValue, r.resultUnit)}
+                      </td>
+                    </tr>
+                  ))}
+                  {advancingQualified.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="p-8 text-center text-slate-500">
+                        暂无晋级人员，请调整晋级规则
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <button 
+              onClick={() => setIsAdvanceModalOpen(false)}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button 
+              onClick={handleConfirmAdvance}
+              disabled={advancingQualified.length === 0 || !nextRoundName.trim()}
+              className="btn-primary"
+            >
+              <ChevronRight size={18} />
+              确认晋级（{advancingQualified.length}人）
+            </button>
+          </div>
         </div>
       </Modal>
     </div>
