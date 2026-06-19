@@ -122,6 +122,7 @@ export interface AppStore extends AppState {
   addTrack: (track: Omit<Track, 'id'>) => void;
   addEvent: (event: Omit<Event, 'id'>) => void;
   createSchedule: (schedule: Omit<Schedule, 'id'>) => { success: boolean; conflicts?: Conflict[] };
+  updateSchedule: (scheduleId: string, updates: Partial<Omit<Schedule, 'id'>>) => { success: boolean; conflicts?: Conflict[] };
   cancelSchedule: (scheduleId: string) => void;
   
   checkAllConflicts: () => Conflict[];

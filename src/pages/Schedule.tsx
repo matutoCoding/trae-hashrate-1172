@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle, PlusCircle, Building, Target, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle, PlusCircle, Building, Target, ChevronDown, ChevronRight, AlertTriangle, CheckCircle } from 'lucide-react';
 import { useAppStore, useSchedulesWithDetails, useTracksWithVenue } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
@@ -14,12 +14,14 @@ const Schedule: React.FC = () => {
   const events = useAppStore(state => state.events);
   const createSchedule = useAppStore(state => state.createSchedule);
   const cancelSchedule = useAppStore(state => state.cancelSchedule);
+  const updateSchedule = useAppStore(state => state.updateSchedule);
   const addVenue = useAppStore(state => state.addVenue);
   const addTrack = useAppStore(state => state.addTrack);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isVenueModalOpen, setIsVenueModalOpen] = useState(false);
   const [isTrackModalOpen, setIsTrackModalOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [selectedTrack, setSelectedTrack] = useState('');
   const [selectedEvent, setSelectedEvent] = useState('');
@@ -37,9 +39,137 @@ const Schedule: React.FC = () => {
   const [venueFormError, setVenueFormError] = useState('');
   const [trackFormError, setTrackFormError] = useState('');
 
+  const [draggingSchedule, setDraggingSchedule] = useState<{
+    id: string;
+    trackId: string;
+    originalStart: Date;
+    originalEnd: Date;
+    currentStart: Date;
+    currentEnd: Date;
+    mode: 'move' | 'resize';
+  } | null>(null);
+  const [dragTimelineError, setDragTimelineError] = useState<string>('');
+
   const runningTracks = tracks.filter(t => t.type === 'running');
   const fieldTracks = tracks.filter(t => t.type === 'field');
   const activeSchedules = schedules.filter(s => s.status !== ScheduleStatus.CANCELLED);
+
+  const TIMELINE_START_HOUR = 6;
+  const TIMELINE_END_HOUR = 22;
+  const HOUR_WIDTH = 80;
+  const TIMELINE_WIDTH = (TIMELINE_END_HOUR - TIMELINE_START_HOUR) * HOUR_WIDTH;
+
+  const minutesToOffset = (hours: number, minutes: number) => {
+    const totalMinutes = (hours - TIMELINE_START_HOUR) * 60 + minutes;
+    return (totalMinutes / 60) * HOUR_WIDTH;
+  };
+
+  const dateToOffset = (date: Date) => {
+    return minutesToOffset(date.getHours(), date.getMinutes());
+  };
+
+  const durationToWidth = (start: Date, end: Date) => {
+    const durationMs = end.getTime() - start.getTime();
+    const durationMinutes = durationMs / (1000 * 60);
+    return (durationMinutes / 60) * HOUR_WIDTH;
+  };
+
+  const pixelToMinutes = (pixels: number) => {
+    return Math.round((pixels / HOUR_WIDTH) * 60);
+  };
+
+  const roundToNearest15 = (minutes: number) => {
+    return Math.round(minutes / 15) * 15;
+  };
+
+  const checkDragConflict = (scheduleId: string, trackId: string, newStart: Date, newEnd: Date) => {
+    return schedules.filter(s => {
+      if (s.id === scheduleId) return false;
+      if (s.trackId !== trackId) return false;
+      if (s.status === ScheduleStatus.CANCELLED) return false;
+      if (formatDate(s.startTime) !== selectedDate) return false;
+      return isTimeOverlap(newStart, newEnd, s.startTime, s.endTime);
+    });
+  };
+
+  const handleDragStart = (e: React.MouseEvent, schedule: typeof activeSchedules[0], mode: 'move' | 'resize') => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (schedule.status !== ScheduleStatus.SCHEDULED) return;
+    setDraggingSchedule({
+      id: schedule.id,
+      trackId: schedule.trackId,
+      originalStart: schedule.startTime,
+      originalEnd: schedule.endTime,
+      currentStart: schedule.startTime,
+      currentEnd: schedule.endTime,
+      mode
+    });
+    setDragTimelineError('');
+  };
+
+  const handleDragMove = (e: React.MouseEvent) => {
+    if (!draggingSchedule) return;
+    
+    const deltaMinutes = roundToNearest15(pixelToMinutes(e.movementX));
+    if (deltaMinutes === 0) return;
+    
+    let newStart = new Date(draggingSchedule.currentStart);
+    let newEnd = new Date(draggingSchedule.currentEnd);
+    
+    if (draggingSchedule.mode === 'move') {
+      newStart = new Date(newStart.getTime() + deltaMinutes * 60 * 1000);
+      newEnd = new Date(newEnd.getTime() + deltaMinutes * 60 * 1000);
+    } else {
+      newEnd = new Date(newEnd.getTime() + deltaMinutes * 60 * 1000);
+      if (newEnd <= newStart) {
+        newEnd = new Date(newStart.getTime() + 15 * 60 * 1000);
+      }
+    }
+    
+    if (newStart.getDate() !== draggingSchedule.originalStart.getDate()) return;
+    
+    const conflictSchedules = checkDragConflict(draggingSchedule.id, draggingSchedule.trackId, newStart, newEnd);
+    if (conflictSchedules.length > 0) {
+      const names = conflictSchedules.map(s => `${s.event?.name} (${formatTime(s.startTime)}-${formatTime(s.endTime)})`).join(', ');
+      setDragTimelineError(`与 ${names} 冲突`);
+      return;
+    }
+    
+    setDraggingSchedule({
+      ...draggingSchedule,
+      currentStart: newStart,
+      currentEnd: newEnd
+    });
+    setDragTimelineError('');
+  };
+
+  const handleDragEnd = () => {
+    if (!draggingSchedule) return;
+    
+    if (dragTimelineError) {
+      setDraggingSchedule(null);
+      setDragTimelineError('');
+      return;
+    }
+    
+    const result = updateSchedule(draggingSchedule.id, {
+      startTime: draggingSchedule.currentStart,
+      endTime: draggingSchedule.currentEnd
+    });
+    
+    if (!result.success && result.conflicts) {
+      setDragTimelineError(result.conflicts.map(c => c.description).join(', '));
+      setTimeout(() => setDragTimelineError(''), 3000);
+    }
+    
+    setDraggingSchedule(null);
+  };
+
+  const cancelDrag = () => {
+    setDraggingSchedule(null);
+    setDragTimelineError('');
+  };
 
   const toggleVenue = (venueId: string) => {
     const newExpanded = new Set(expandedVenues);
@@ -188,15 +318,44 @@ const Schedule: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div 
+      className="space-y-6"
+      onMouseMove={handleDragMove}
+      onMouseUp={handleDragEnd}
+      onMouseLeave={cancelDrag}
+    >
       <div className="flex items-center justify-between">
         <div>
           <p className="text-slate-500">管理场地赛道的项目排期分配</p>
         </div>
-        <button className="btn-primary" onClick={() => setIsModalOpen(true)}>
-          <Plus size={20} />
-          新建排期
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center bg-slate-100 rounded-lg p-1">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                viewMode === 'list' 
+                  ? 'bg-white text-primary-600 shadow-sm' 
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              列表视图
+            </button>
+            <button
+              onClick={() => setViewMode('timeline')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                viewMode === 'timeline' 
+                  ? 'bg-white text-primary-600 shadow-sm' 
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              时间轴
+            </button>
+          </div>
+          <button className="btn-primary" onClick={() => setIsModalOpen(true)}>
+            <Plus size={20} />
+            新建排期
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -250,6 +409,7 @@ const Schedule: React.FC = () => {
         </div>
       </div>
 
+      {viewMode === 'list' && (
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-1 space-y-4">
           <div className="card p-4">
@@ -457,6 +617,177 @@ const Schedule: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
+
+      {viewMode === 'timeline' && (
+        <div className="card p-4">
+          {dragTimelineError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg animate-fade-in">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={18} className="text-warning" />
+                <span className="text-sm text-warning font-medium">{dragTimelineError}</span>
+              </div>
+            </div>
+          )}
+          
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-4">
+              <h3 className="font-semibold text-slate-800">时间轴排期视图</h3>
+              <div className="flex items-center gap-2">
+                <Calendar size={16} className="text-slate-400" />
+                <input 
+                  type="date" 
+                  value={selectedDate}
+                  onChange={e => setSelectedDate(e.target.value)}
+                  className="input text-sm w-auto py-1.5"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-3 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-primary-500" />
+                <span className="text-slate-600">径赛</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-accent" />
+                <span className="text-slate-600">田赛</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-success" />
+                <span className="text-slate-600">已完成</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-slate-400" />
+                <span className="text-slate-600">进行中</span>
+              </div>
+              <span className="text-slate-400 border-l border-slate-200 pl-3">拖拽移动 | 拖右边缘调整</span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto pb-4">
+            <div style={{ minWidth: TIMELINE_WIDTH + 200 }}>
+              <div className="flex border-b border-slate-200 sticky top-0 bg-white z-10">
+                <div className="w-48 flex-shrink-0 p-3 text-xs font-semibold text-slate-500 border-r border-slate-200">
+                  场地 / 赛道
+                </div>
+                <div className="flex-1 flex relative">
+                  {Array.from({ length: TIMELINE_END_HOUR - TIMELINE_START_HOUR + 1 }, (_, i) => {
+                    const hour = TIMELINE_START_HOUR + i;
+                    return (
+                      <div 
+                        key={hour}
+                        className="flex-shrink-0 text-xs font-medium text-slate-500 text-center py-3 border-r border-slate-100"
+                        style={{ width: HOUR_WIDTH }}
+                      >
+                        {String(hour).padStart(2, '0')}:00
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                {venues.map(venue => {
+                  const venueTracks = getTracksByVenue(venue.id);
+                  return (
+                    <div key={venue.id} className="border-b border-slate-100">
+                      <div className="flex bg-slate-50">
+                        <div className="w-48 flex-shrink-0 p-3 border-r border-slate-200 flex items-center gap-2">
+                          <Building size={14} className="text-primary-600" />
+                          <span className="text-sm font-semibold text-slate-700">{venue.name}</span>
+                          {venue.location && <span className="text-xs text-slate-400">({venue.location})</span>}
+                        </div>
+                        <div className="flex-1 flex relative" style={{ width: TIMELINE_WIDTH }}>
+                          {Array.from({ length: TIMELINE_END_HOUR - TIMELINE_START_HOUR }, (_, i) => (
+                            <div 
+                              key={i}
+                              className="absolute top-0 bottom-0 border-r border-dashed border-slate-100"
+                              style={{ left: (i + 1) * HOUR_WIDTH }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      {venueTracks.map(track => {
+                        const trackSchedules = schedules.filter(s => 
+                          s.trackId === track.id && 
+                          formatDate(s.startTime) === selectedDate &&
+                          s.status !== ScheduleStatus.CANCELLED
+                        );
+                        
+                        return (
+                          <div key={track.id} className="flex hover:bg-slate-50/50 transition-colors">
+                            <div className="w-48 flex-shrink-0 p-2 pl-8 border-r border-slate-200 flex items-center">
+                              <div className={`w-2 h-2 rounded-full mr-2 ${track.type === 'running' ? 'bg-primary-500' : 'bg-accent'}`} />
+                              <span className="text-sm text-slate-600 truncate">{track.name}</span>
+                            </div>
+                            <div className="flex-1 relative h-14" style={{ width: TIMELINE_WIDTH }}>
+                              {Array.from({ length: TIMELINE_END_HOUR - TIMELINE_START_HOUR }, (_, i) => (
+                                <div 
+                                  key={i}
+                                  className="absolute top-0 bottom-0 border-r border-dashed border-slate-100"
+                                  style={{ left: (i + 1) * HOUR_WIDTH }}
+                                />
+                              ))}
+
+                              {trackSchedules.map(schedule => {
+                                const isDragging = draggingSchedule?.id === schedule.id;
+                                const displayStart = isDragging ? draggingSchedule!.currentStart : schedule.startTime;
+                                const displayEnd = isDragging ? draggingSchedule!.currentEnd : schedule.endTime;
+                                
+                                const left = dateToOffset(displayStart);
+                                const width = Math.max(durationToWidth(displayStart, displayEnd), 30);
+                                
+                                const isFieldEvent = schedule.event?.type === 'field';
+                                let colorClass = isFieldEvent ? 'bg-accent' : 'bg-primary-500';
+                                if (schedule.status === ScheduleStatus.COMPLETED) colorClass = 'bg-success';
+                                if (schedule.status === ScheduleStatus.IN_PROGRESS) colorClass = 'bg-slate-500';
+                                
+                                const canDrag = schedule.status === ScheduleStatus.SCHEDULED;
+                                
+                                return (
+                                  <div
+                                    key={schedule.id}
+                                    className={`absolute top-1.5 h-11 rounded-lg shadow-sm px-2 py-1 ${colorClass} text-white overflow-hidden select-none ${canDrag ? 'cursor-move' : 'cursor-default'} ${isDragging ? 'shadow-lg ring-2 ring-primary-400 opacity-90 z-20' : 'hover:shadow-md z-10'} transition-all`}
+                                    style={{ left, width }}
+                                    onMouseDown={(e) => canDrag && handleDragStart(e, schedule, 'move')}
+                                  >
+                                    <div className="flex items-center justify-between h-full min-w-0 gap-1">
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-semibold truncate">{schedule.event?.name}</p>
+                                        <p className="text-[10px] opacity-80 font-mono">
+                                          {formatTime(displayStart)}-{formatTime(displayEnd)}
+                                        </p>
+                                      </div>
+                                      {canDrag && (
+                                        <div 
+                                          className="w-1.5 h-full bg-white/30 rounded cursor-ew-resize hover:bg-white/50 ml-1"
+                                          onMouseDown={(e) => { e.stopPropagation(); handleDragStart(e, schedule, 'resize'); }}
+                                        />
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+
+                {tracks.length === 0 && (
+                  <div className="text-center py-12">
+                    <Building className="mx-auto text-slate-300 mb-3" size={48} />
+                    <p className="text-slate-500">暂无场地赛道，请先创建场地和赛道</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Modal 
         isOpen={isModalOpen} 
@@ -561,6 +892,38 @@ const Schedule: React.FC = () => {
             </div>
           </div>
 
+          {conflicts.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 animate-fade-in">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="text-warning flex-shrink-0 mt-0.5" size={20} />
+                <div className="flex-1">
+                  <h4 className="font-semibold text-warning mb-2">时间冲突警告</h4>
+                  <p className="text-sm text-slate-600 mb-2">当前时段与以下排期重叠，请调整时间：</p>
+                  <ul className="space-y-1">
+                    {conflicts.map((c, idx) => (
+                      <li key={idx} className="text-sm text-warning font-medium flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 bg-warning rounded-full" />
+                        {c}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {conflicts.length === 0 && selectedTrack && startTime && endTime && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4 animate-fade-in">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="text-success flex-shrink-0" size={20} />
+                <div>
+                  <h4 className="font-semibold text-success">时段空闲</h4>
+                  <p className="text-sm text-slate-600">当前时段可用，可以确认排期</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
             <button 
               onClick={() => { setIsModalOpen(false); resetForm(); }}
@@ -570,11 +933,11 @@ const Schedule: React.FC = () => {
             </button>
             <button 
               onClick={handleCreateSchedule}
-              disabled={conflicts.length > 0}
-              className="btn-primary"
+              disabled={conflicts.length > 0 || Object.keys(formErrors).length > 0}
+              className={`btn-primary ${conflicts.length > 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               <Check size={18} />
-              确认排期
+              {conflicts.length > 0 ? '存在冲突' : '确认排期'}
             </button>
           </div>
         </div>

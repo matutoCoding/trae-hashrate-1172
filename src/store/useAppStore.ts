@@ -90,6 +90,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }));
   },
 
+  updateSchedule: (scheduleId: string, updates: Partial<Omit<Schedule, 'id'>>) => {
+    const state = get();
+    const existing = state.schedules.find(s => s.id === scheduleId);
+    if (!existing) return { success: false, conflicts: [] };
+    
+    const updatedSchedule: Schedule = {
+      ...existing,
+      ...updates
+    };
+    
+    const otherSchedules = state.schedules.filter(s => s.id !== scheduleId);
+    const conflicts = detectConflictsForSchedule(otherSchedules, updatedSchedule);
+    
+    if (conflicts.length > 0) {
+      return { success: false, conflicts };
+    }
+    
+    set(state => ({
+      schedules: state.schedules.map(s => 
+        s.id === scheduleId ? updatedSchedule : s
+      )
+    }));
+    
+    return { success: true };
+  },
+
   checkAllConflicts: () => {
     const state = get();
     const conflicts = detectAllConflicts(state.schedules);
@@ -189,6 +215,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   updateResult: (id: string, result: Partial<Omit<Result, 'id'>>) => {
+    const oldResult = get().results.find(r => r.id === id);
+    const oldEventId = oldResult?.eventId;
+    
     set(state => ({
       results: state.results.map(r => 
         r.id === id ? { ...r, ...result } : r
@@ -197,6 +226,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     
     const updated = get().results.find(r => r.id === id);
     if (updated) {
+      if (oldEventId && oldEventId !== updated.eventId) {
+        get().calculateRanks(oldEventId);
+      }
       get().calculateRanks(updated.eventId);
     }
   },

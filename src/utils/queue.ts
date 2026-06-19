@@ -83,50 +83,58 @@ export function moveEntryUp(
   queue: QueueEntry[],
   entryId: string
 ): QueueEntry[] {
-  const sorted = sortQueue(queue);
-  const entry = sorted.find(e => e.id === entryId);
-  if (!entry || entry.position <= 1) return queue;
+  const waiting = queue.filter(e => e.status === QueueStatus.WAITING);
+  const sortedWaiting = sortQueue(waiting);
+  const others = queue.filter(e => e.status !== QueueStatus.WAITING);
   
-  const entryIndex = sorted.findIndex(e => e.id === entryId);
-  const prevEntry = sorted[entryIndex - 1];
+  const entry = sortedWaiting.find(e => e.id === entryId);
+  if (!entry) return queue;
   
+  const waitingIndex = sortedWaiting.findIndex(e => e.id === entryId);
+  if (waitingIndex <= 0) return queue;
+  
+  const prevEntry = sortedWaiting[waitingIndex - 1];
   if (prevEntry.priority !== entry.priority) {
     return queue;
   }
   
   const tempSortOrder = entry.sortOrder;
-  const updated = sorted.map(e => {
+  const updatedWaiting = sortedWaiting.map(e => {
     if (e.id === entryId) return { ...e, sortOrder: prevEntry.sortOrder };
     if (e.id === prevEntry.id) return { ...e, sortOrder: tempSortOrder };
     return e;
   });
   
-  return sortQueue(updated);
+  return sortQueue([...others, ...updatedWaiting]);
 }
 
 export function moveEntryDown(
   queue: QueueEntry[],
   entryId: string
 ): QueueEntry[] {
-  const sorted = sortQueue(queue);
-  const entry = sorted.find(e => e.id === entryId);
-  if (!entry || entry.position >= sorted.length) return queue;
+  const waiting = queue.filter(e => e.status === QueueStatus.WAITING);
+  const sortedWaiting = sortQueue(waiting);
+  const others = queue.filter(e => e.status !== QueueStatus.WAITING);
   
-  const entryIndex = sorted.findIndex(e => e.id === entryId);
-  const nextEntry = sorted[entryIndex + 1];
+  const entry = sortedWaiting.find(e => e.id === entryId);
+  if (!entry) return queue;
   
+  const waitingIndex = sortedWaiting.findIndex(e => e.id === entryId);
+  if (waitingIndex >= sortedWaiting.length - 1) return queue;
+  
+  const nextEntry = sortedWaiting[waitingIndex + 1];
   if (nextEntry.priority !== entry.priority) {
     return queue;
   }
   
   const tempSortOrder = entry.sortOrder;
-  const updated = sorted.map(e => {
+  const updatedWaiting = sortedWaiting.map(e => {
     if (e.id === entryId) return { ...e, sortOrder: nextEntry.sortOrder };
     if (e.id === nextEntry.id) return { ...e, sortOrder: tempSortOrder };
     return e;
   });
   
-  return sortQueue(updated);
+  return sortQueue([...others, ...updatedWaiting]);
 }
 
 export function changeEntryPriority(

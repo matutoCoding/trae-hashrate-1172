@@ -65,14 +65,16 @@ const Priority: React.FC = () => {
   };
 
   const canMoveUp = (entry: typeof waitingEntries[0]) => {
-    if (entry.position <= 1) return false;
-    const prevEntry = waitingEntries.find(e => e.position === entry.position - 1);
+    const waitingIndex = waitingEntries.findIndex(e => e.id === entry.id);
+    if (waitingIndex <= 0) return false;
+    const prevEntry = waitingEntries[waitingIndex - 1];
     return prevEntry ? prevEntry.priority === entry.priority : false;
   };
 
   const canMoveDown = (entry: typeof waitingEntries[0]) => {
-    if (entry.position >= waitingEntries.length) return false;
-    const nextEntry = waitingEntries.find(e => e.position === entry.position + 1);
+    const waitingIndex = waitingEntries.findIndex(e => e.id === entry.id);
+    if (waitingIndex >= waitingEntries.length - 1) return false;
+    const nextEntry = waitingEntries[waitingIndex + 1];
     return nextEntry ? nextEntry.priority === entry.priority : false;
   };
 

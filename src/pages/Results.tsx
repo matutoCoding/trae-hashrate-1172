@@ -1,9 +1,31 @@
 import React, { useState, useMemo } from 'react';
-import { Trophy, Medal, Award, Plus, Edit2, Trash2, Download, Filter } from 'lucide-react';
+import { Trophy, Medal, Award, Plus, Edit2, Trash2, Download, Filter, Upload, Info, CheckCircle, AlertCircle } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
-import { Result, Event, EventType, EntryStatus } from '@/types';
+import { Result, Event, EventType, EntryStatus, Athlete } from '@/types';
+
+interface PendingResult {
+  athleteId: string;
+  athlete?: Athlete;
+  resultValue: number;
+  resultUnit: string;
+  notes?: string;
+  parsedSuccess: boolean;
+  errorMessage?: string;
+}
+
+interface PreviewResult {
+  athleteId: string;
+  athlete: Athlete;
+  resultValue: number;
+  resultUnit: string;
+  rank: number;
+  notes?: string;
+  isNew: boolean;
+  oldRank?: number;
+  rankChange?: number;
+}
 
 const Results: React.FC = () => {
   const results = useAppStore(state => state.results);
@@ -14,8 +36,14 @@ const Results: React.FC = () => {
   const deleteResult = useAppStore(state => state.deleteResult);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
   const [editingResult, setEditingResult] = useState<Result | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<string>('');
+  const [batchEventId, setBatchEventId] = useState<string>('');
+  const [batchPasteText, setBatchPasteText] = useState<string>('');
+  const [pendingResults, setPendingResults] = useState<PendingResult[]>([]);
+  const [previewResults, setPreviewResults] = useState<PreviewResult[]>([]);
+  const [batchStage, setBatchStage] = useState<'paste' | 'parse' | 'preview' | 'confirm'>('paste');
   const [formData, setFormData] = useState({
     eventId: '',
     athleteId: '',
@@ -114,6 +142,181 @@ const Results: React.FC = () => {
     setEditingResult(null);
   };
 
+  const handleOpenBatchModal = () => {
+    setBatchEventId(events[0]?.id || '');
+    setBatchPasteText('');
+    setPendingResults([]);
+    setPreviewResults([]);
+    setBatchStage('paste');
+    setIsBatchModalOpen(true);
+  };
+
+  const parseBatchPaste = () => {
+    if (!batchEventId || !batchPasteText.trim()) return;
+    
+    const lines = batchPasteText.trim().split(/\r?\n/);
+    const parsed: PendingResult[] = [];
+    
+    lines.forEach((line, idx) => {
+      if (!line.trim()) return;
+      
+      const parts = line.split(/\t|,|，|\|/).map(p => p.trim());
+      if (parts.length < 2) {
+        parsed.push({
+          athleteId: '',
+          resultValue: 0,
+          resultUnit: '',
+          parsedSuccess: false,
+          errorMessage: `第${idx + 1}行：格式不正确，至少需要号码/姓名和成绩`
+        });
+        return;
+      }
+      
+      const identifier = parts[0];
+      const valueStr = parts[1];
+      const notes = parts[2] || '';
+      
+      let athlete = athletes.find(a => 
+        a.bibNumber.toLowerCase() === identifier.toLowerCase() ||
+        a.name === identifier
+      );
+      
+      if (!athlete) {
+        const foundByName = athletes.find(a => a.name.includes(identifier) || identifier.includes(a.name));
+        if (foundByName) athlete = foundByName;
+      }
+      
+      const value = parseFloat(valueStr);
+      if (!athlete || isNaN(value)) {
+        parsed.push({
+          athleteId: '',
+          resultValue: isNaN(value) ? 0 : value,
+          resultUnit: '',
+          parsedSuccess: false,
+          errorMessage: `第${idx + 1}行：${!athlete ? '找不到运动员' : '成绩格式错误'} - "${line}"`
+        });
+        return;
+      }
+      
+      const event = events.find(e => e.id === batchEventId);
+      const defaultUnit = event?.type === 'field' ? 'm' : 's';
+      
+      parsed.push({
+        athleteId: athlete.id,
+        athlete,
+        resultValue: value,
+        resultUnit: defaultUnit,
+        notes,
+        parsedSuccess: true
+      });
+    });
+    
+    setPendingResults(parsed);
+    setBatchStage('parse');
+  };
+
+  const generatePreview = () => {
+    if (!batchEventId) return;
+    
+    const event = events.find(e => e.id === batchEventId);
+    const isFieldEvent = event?.type === 'field';
+    const successfulPendings = pendingResults.filter(p => p.parsedSuccess);
+    const existingEventResults = results.filter(r => r.eventId === batchEventId);
+    
+    const athleteExistingMap = new Map<string, Result>();
+    existingEventResults.forEach(r => athleteExistingMap.set(r.athleteId, r));
+    
+    const merged = new Map<string, { resultValue: number; resultUnit: string; notes?: string; athlete: Athlete; isNew: boolean; oldRank?: number }>();
+    
+    existingEventResults.forEach(r => {
+      const athlete = athletes.find(a => a.id === r.athleteId);
+      if (athlete) {
+        merged.set(r.athleteId, {
+          resultValue: r.resultValue,
+          resultUnit: r.resultUnit,
+          notes: r.notes,
+          athlete,
+          isNew: false,
+          oldRank: r.rank
+        });
+      }
+    });
+    
+    successfulPendings.forEach(p => {
+      if (p.athlete) {
+        const existing = merged.get(p.athleteId);
+        merged.set(p.athleteId, {
+          resultValue: p.resultValue,
+          resultUnit: p.resultUnit,
+          notes: p.notes || existing?.notes,
+          athlete: p.athlete,
+          isNew: !existing,
+          oldRank: existing?.oldRank
+        });
+      }
+    });
+    
+    const mergedList = Array.from(merged.values());
+    const sorted = [...mergedList].sort((a, b) => {
+      if (isFieldEvent) {
+        return b.resultValue - a.resultValue;
+      } else {
+        return a.resultValue - b.resultValue;
+      }
+    });
+    
+    const previews: PreviewResult[] = sorted.map((item, idx) => ({
+      athleteId: item.athlete.id,
+      athlete: item.athlete,
+      resultValue: item.resultValue,
+      resultUnit: item.resultUnit,
+      rank: idx + 1,
+      notes: item.notes,
+      isNew: item.isNew,
+      oldRank: item.oldRank,
+      rankChange: item.oldRank ? idx + 1 - item.oldRank : undefined
+    }));
+    
+    setPreviewResults(previews);
+    setBatchStage('preview');
+  };
+
+  const confirmBatchImport = () => {
+    if (!batchEventId) return;
+    
+    const successfulPendings = pendingResults.filter(p => p.parsedSuccess);
+    const athleteExistingMap = new Map<string, Result>();
+    const existingEventResults = results.filter(r => r.eventId === batchEventId);
+    
+    existingEventResults.forEach(r => athleteExistingMap.set(r.athleteId, r));
+    
+    successfulPendings.forEach(p => {
+      const existing = athleteExistingMap.get(p.athleteId);
+      const athlete = athletes.find(a => a.id === p.athleteId);
+      if (!athlete) return;
+      
+      const resultData = {
+        eventId: batchEventId,
+        athleteId: p.athleteId,
+        athlete,
+        resultValue: p.resultValue,
+        resultUnit: p.resultUnit,
+        rank: 0,
+        status: EntryStatus.FINISHED,
+        notes: p.notes
+      };
+      
+      if (existing) {
+        updateResult(existing.id, resultData);
+      } else {
+        addResult(resultData);
+      }
+    });
+    
+    setIsBatchModalOpen(false);
+    setBatchStage('confirm');
+  };
+
   const getEventName = (event: Event) => {
     const genderLabel = event.gender === 'male' ? '男子' : event.gender === 'female' ? '女子' : '混合';
     return `${genderLabel} ${event.name}`;
@@ -195,6 +398,10 @@ const Results: React.FC = () => {
           <button className="btn-secondary">
             <Download size={18} />
             导出成绩
+          </button>
+          <button className="btn-secondary" onClick={handleOpenBatchModal}>
+            <Upload size={18} />
+            批量录入
           </button>
           <button className="btn-primary" onClick={handleOpenAddModal}>
             <Plus size={18} />
@@ -512,6 +719,286 @@ const Results: React.FC = () => {
               {editingResult ? '保存修改' : '确认录入'}
             </button>
           </div>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isBatchModalOpen} 
+        onClose={() => { setIsBatchModalOpen(false); }}
+        title="批量录入成绩"
+        size="xl"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                batchStage === 'paste' 
+                  ? 'bg-primary-500 text-white' 
+                  : batchStage === 'parse' || batchStage === 'preview' || batchStage === 'confirm'
+                    ? 'bg-success text-white' 
+                    : 'bg-slate-200 text-slate-500'
+              }`}>1</div>
+              <span className={`font-medium ${batchStage === 'paste' ? 'text-primary-600' : 'text-slate-500'}`}>粘贴数据</span>
+            </div>
+            <div className="flex-1 h-px bg-slate-200" />
+            <div className="flex items-center gap-2">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                batchStage === 'parse' 
+                  ? 'bg-primary-500 text-white' 
+                  : batchStage === 'preview' || batchStage === 'confirm'
+                    ? 'bg-success text-white' 
+                    : 'bg-slate-200 text-slate-500'
+              }`}>2</div>
+              <span className={`font-medium ${batchStage === 'parse' ? 'text-primary-600' : 'text-slate-500'}`}>校验解析</span>
+            </div>
+            <div className="flex-1 h-px bg-slate-200" />
+            <div className="flex items-center gap-2">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                batchStage === 'preview' 
+                  ? 'bg-primary-500 text-white' 
+                  : batchStage === 'confirm' 
+                    ? 'bg-success text-white' 
+                    : 'bg-slate-200 text-slate-500'
+              }`}>3</div>
+              <span className={`font-medium ${batchStage === 'preview' ? 'text-primary-600' : 'text-slate-500'}`}>预览名次</span>
+            </div>
+            <div className="flex-1 h-px bg-slate-200" />
+            <div className="flex items-center gap-2">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                batchStage === 'confirm' 
+                  ? 'bg-primary-500 text-white' 
+                  : 'bg-slate-200 text-slate-500'
+              }`}>4</div>
+              <span className={`font-medium ${batchStage === 'confirm' ? 'text-primary-600' : 'text-slate-500'}`}>确认导入</span>
+            </div>
+          </div>
+
+          <div>
+            <label className="label">选择项目 <span className="text-warning">*</span></label>
+            <select 
+              value={batchEventId}
+              onChange={e => { setBatchEventId(e.target.value); setBatchStage('paste'); setPendingResults([]); setPreviewResults([]); }}
+              className="input"
+            >
+              <option value="">请选择项目</option>
+              {events.map(event => (
+                <option key={event.id} value={event.id}>
+                  {getEventName(event)} ({event.type === 'field' ? '田赛' : '径赛'})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {batchStage === 'paste' && (
+            <>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <Info className="text-primary-600 flex-shrink-0 mt-0.5" size={20} />
+                  <div>
+                    <h4 className="font-semibold text-slate-800 mb-2">粘贴格式说明</h4>
+                    <ul className="text-sm text-slate-600 space-y-1">
+                      <li>• 每行一条记录，格式：<code className="bg-white px-1 rounded">运动员号码或姓名 + 制表符/逗号/空格 + 成绩 + (可选)备注</code></li>
+                      <li>• 从Excel表格复制：选中两列（号码/姓名 和 成绩）直接粘贴即可</li>
+                      <li>• 田赛成绩单位为米(m)，径赛为秒(s)</li>
+                      <li>• 已录入的运动员成绩会被覆盖更新</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="label">粘贴成绩数据 <span className="text-warning">*</span></label>
+                <textarea
+                  value={batchPasteText}
+                  onChange={e => setBatchPasteText(e.target.value)}
+                  className="input min-h-[240px] font-mono text-sm"
+                  placeholder={`示例（从Excel直接复制粘贴）：\nA001\t10.85\nA002\t11.02\nA003\t11.15\t破纪录\nA004\t10.98`}
+                />
+              </div>
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button 
+                  onClick={() => setIsBatchModalOpen(false)}
+                  className="btn-secondary"
+                >
+                  取消
+                </button>
+                <button 
+                  onClick={parseBatchPaste}
+                  disabled={!batchEventId || !batchPasteText.trim()}
+                  className="btn-primary"
+                >
+                  下一步：校验解析
+                </button>
+              </div>
+            </>
+          )}
+
+          {batchStage === 'parse' && (
+            <>
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-slate-800">解析结果</h4>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="flex items-center gap-1">
+                      <CheckCircle size={14} className="text-success" />
+                      成功 {pendingResults.filter(p => p.parsedSuccess).length} 条
+                    </span>
+                    {pendingResults.filter(p => !p.parsedSuccess).length > 0 && (
+                      <span className="flex items-center gap-1">
+                        <AlertCircle size={14} className="text-warning" />
+                        失败 {pendingResults.filter(p => !p.parsedSuccess).length} 条
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="max-h-[300px] overflow-y-auto border border-slate-200 rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-slate-50">
+                      <tr>
+                        <th className="text-left p-3 border-b border-slate-200 w-16">状态</th>
+                        <th className="text-left p-3 border-b border-slate-200">运动员</th>
+                        <th className="text-left p-3 border-b border-slate-200">号码</th>
+                        <th className="text-left p-3 border-b border-slate-200">成绩</th>
+                        <th className="text-left p-3 border-b border-slate-200">备注</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingResults.map((p, idx) => (
+                        <tr key={idx} className={!p.parsedSuccess ? 'bg-red-50' : ''}>
+                          <td className="p-3 border-b border-slate-100">
+                            {p.parsedSuccess ? (
+                              <CheckCircle size={16} className="text-success" />
+                            ) : (
+                              <div title={p.errorMessage}><AlertCircle size={16} className="text-warning cursor-help" /></div>
+                            )}
+                          </td>
+                          <td className="p-3 border-b border-slate-100">
+                            <span className="font-medium text-slate-800">{p.athlete?.name || '-'}</span>
+                            {!p.parsedSuccess && p.errorMessage && (
+                              <p className="text-xs text-warning mt-0.5">{p.errorMessage}</p>
+                            )}
+                          </td>
+                          <td className="p-3 border-b border-slate-100 font-mono text-slate-600">{p.athlete?.bibNumber || '-'}</td>
+                          <td className="p-3 border-b border-slate-100 font-mono text-slate-800">
+                            {p.parsedSuccess ? formatResult(p.resultValue, p.resultUnit) : p.resultValue || '-'}
+                          </td>
+                          <td className="p-3 border-b border-slate-100 text-slate-500">{p.notes || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button 
+                  onClick={() => setBatchStage('paste')}
+                  className="btn-secondary"
+                >
+                  上一步
+                </button>
+                <button 
+                  onClick={() => setIsBatchModalOpen(false)}
+                  className="btn-secondary"
+                >
+                  取消
+                </button>
+                <button 
+                  onClick={generatePreview}
+                  disabled={pendingResults.filter(p => p.parsedSuccess).length === 0}
+                  className="btn-primary"
+                >
+                  下一步：预览名次
+                </button>
+              </div>
+            </>
+          )}
+
+          {batchStage === 'preview' && (
+            <>
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                <div className="flex items-start gap-3">
+                  <Info className="text-amber-600 flex-shrink-0 mt-0.5" size={20} />
+                  <div>
+                    <h4 className="font-semibold text-slate-800 mb-1">名次预览</h4>
+                    <p className="text-sm text-slate-600">
+                      已合并现有成绩并重新排名，{previewResults.filter(p => p.isNew).length} 名新录入，{previewResults.filter(p => !p.isNew && p.rankChange && p.rankChange !== 0).length} 名名次变化。
+                      {(() => {
+                        const evt = events.find(e => e.id === batchEventId);
+                        return evt ? ` ${evt.type === 'field' ? '田赛，成绩越大排名越靠前' : '径赛，用时越短排名越靠前'}` : '';
+                      })()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="max-h-[350px] overflow-y-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-50">
+                    <tr>
+                      <th className="text-left p-3 border-b border-slate-200 w-16">名次</th>
+                      <th className="text-left p-3 border-b border-slate-200">运动员</th>
+                      <th className="text-left p-3 border-b border-slate-200">号码</th>
+                      <th className="text-left p-3 border-b border-slate-200">代表队</th>
+                      <th className="text-left p-3 border-b border-slate-200">成绩</th>
+                      <th className="text-left p-3 border-b border-slate-200 w-20">变化</th>
+                      <th className="text-left p-3 border-b border-slate-200">备注</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewResults.map((p) => (
+                      <tr key={p.athleteId} className={p.isNew ? 'bg-green-50' : (p.rankChange && p.rankChange !== 0 ? 'bg-blue-50' : '')}>
+                        <td className="p-3 border-b border-slate-100">
+                          <div className="flex items-center justify-center">{getRankIcon(p.rank)}</div>
+                        </td>
+                        <td className="p-3 border-b border-slate-100">
+                          <span className="font-medium text-slate-800">{p.athlete.name}</span>
+                          {p.isNew && (
+                            <span className="ml-2 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">新</span>
+                          )}
+                        </td>
+                        <td className="p-3 border-b border-slate-100 font-mono text-slate-600">{p.athlete.bibNumber}</td>
+                        <td className="p-3 border-b border-slate-100 text-slate-600">{p.athlete.team}</td>
+                        <td className="p-3 border-b border-slate-100 font-mono font-bold text-slate-800">
+                          {formatResult(p.resultValue, p.resultUnit)}
+                        </td>
+                        <td className="p-3 border-b border-slate-100">
+                          {p.rankChange !== undefined && p.rankChange !== 0 ? (
+                            <span className={`text-sm font-medium ${p.rankChange < 0 ? 'text-success' : 'text-warning'}`}>
+                              {p.rankChange < 0 ? '↑' : '↓'} {Math.abs(p.rankChange)}
+                            </span>
+                          ) : p.oldRank ? (
+                            <span className="text-slate-400 text-sm">不变</span>
+                          ) : (
+                            <span className="text-green-600 text-sm">新入榜</span>
+                          )}
+                        </td>
+                        <td className="p-3 border-b border-slate-100 text-slate-500">{p.notes || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button 
+                  onClick={() => setBatchStage('parse')}
+                  className="btn-secondary"
+                >
+                  上一步
+                </button>
+                <button 
+                  onClick={() => setIsBatchModalOpen(false)}
+                  className="btn-secondary"
+                >
+                  取消
+                </button>
+                <button 
+                  onClick={confirmBatchImport}
+                  className="btn-primary"
+                >
+                  <CheckCircle size={18} />
+                  确认导入（{previewResults.length}人）
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </Modal>
     </div>
