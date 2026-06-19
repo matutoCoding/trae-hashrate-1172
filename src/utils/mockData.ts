@@ -236,6 +236,12 @@ export function generateMockQueueEntries(events: Event[], athletes: Athlete[]): 
   const trackEventsList = events.filter(e => e.type === EventType.TRACK && e.round === 1);
   const now = new Date();
   
+  const prioritySortOrder: Record<string, number> = {
+    [Priority.VIP]: 0,
+    [Priority.URGENT]: 0,
+    [Priority.NORMAL]: 0
+  };
+  
   for (let i = 0; i < 20; i++) {
     const event = trackEventsList[i % Math.min(trackEventsList.length, 5)];
     const athlete = athletes[i];
@@ -250,6 +256,8 @@ export function generateMockQueueEntries(events: Event[], athletes: Athlete[]): 
     if (i < 3) status = QueueStatus.CALLED;
     if (i < 1) status = QueueStatus.CHECKED_IN;
     
+    prioritySortOrder[priority]++;
+    
     entries.push({
       id: generateId(),
       eventId: event.id,
@@ -259,15 +267,16 @@ export function generateMockQueueEntries(events: Event[], athletes: Athlete[]): 
       status,
       position: i + 1,
       joinTime,
+      sortOrder: prioritySortOrder[priority],
       calledTime: status === QueueStatus.CALLED || status === QueueStatus.CHECKED_IN ? new Date() : undefined
     });
   }
   
+  const priorityWeight = { [Priority.VIP]: 0, [Priority.URGENT]: 1, [Priority.NORMAL]: 2 };
   return entries.sort((a, b) => {
-    const priorityWeight = { [Priority.VIP]: 0, [Priority.URGENT]: 1, [Priority.NORMAL]: 2 };
     const priorityDiff = priorityWeight[a.priority] - priorityWeight[b.priority];
     if (priorityDiff !== 0) return priorityDiff;
-    return a.joinTime.getTime() - b.joinTime.getTime();
+    return a.sortOrder - b.sortOrder;
   }).map((entry, index) => ({ ...entry, position: index + 1 }));
 }
 

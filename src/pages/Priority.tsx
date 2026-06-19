@@ -10,6 +10,9 @@ const Priority: React.FC = () => {
   const queueEntries = useQueueWithDetails();
   const insertWithPriority = useAppStore(state => state.insertWithPriority);
   const removeFromQueue = useAppStore(state => state.removeFromQueue);
+  const moveQueueEntryUp = useAppStore(state => state.moveQueueEntryUp);
+  const moveQueueEntryDown = useAppStore(state => state.moveQueueEntryDown);
+  const changeEntryPriority = useAppStore(state => state.changeEntryPriority);
   const events = useAppStore(state => state.events);
   const athletes = useAppStore(state => state.athletes);
   
@@ -38,66 +41,16 @@ const Priority: React.FC = () => {
     setSelectedAthlete('');
   };
 
-  const handleMoveUp = (entryId: string, currentPosition: number) => {
-    if (currentPosition <= 1) return;
-    const entry = waitingEntries.find(e => e.id === entryId);
-    if (!entry) return;
-    
-    const currentIndex = waitingEntries.findIndex(e => e.id === entryId);
-    const newPriority = entry.priority;
-    removeFromQueue(entryId);
-    
-    const entriesAfterRemove = waitingEntries.filter(e => e.id !== entryId);
-    
-    let insertIndex = currentIndex - 1;
-    while (insertIndex > 0 && entriesAfterRemove[insertIndex].priority === newPriority) {
-      insertIndex--;
-    }
-    
-    insertWithPriority({
-      eventId: entry.eventId,
-      athleteId: entry.athleteId,
-      athlete: entry.athlete,
-      priority: newPriority
-    }, newPriority);
+  const handleMoveUp = (entryId: string) => {
+    moveQueueEntryUp(entryId);
   };
 
-  const handleMoveDown = (entryId: string, currentPosition: number) => {
-    if (currentPosition >= waitingEntries.length) return;
-    const entry = waitingEntries.find(e => e.id === entryId);
-    if (!entry) return;
-    
-    const currentIndex = waitingEntries.findIndex(e => e.id === entryId);
-    const newPriority = entry.priority;
-    removeFromQueue(entryId);
-    
-    const entriesAfterRemove = waitingEntries.filter(e => e.id !== entryId);
-    
-    let insertIndex = currentIndex;
-    while (insertIndex < entriesAfterRemove.length && entriesAfterRemove[insertIndex].priority === newPriority) {
-      insertIndex++;
-    }
-    
-    insertWithPriority({
-      eventId: entry.eventId,
-      athleteId: entry.athleteId,
-      athlete: entry.athlete,
-      priority: newPriority
-    }, newPriority);
+  const handleMoveDown = (entryId: string) => {
+    moveQueueEntryDown(entryId);
   };
 
   const handleChangePriority = (entryId: string, newPriority: PriorityEnum) => {
-    const entry = queueEntries.find(e => e.id === entryId);
-    if (!entry) return;
-    
-    removeFromQueue(entryId);
-    
-    insertWithPriority({
-      eventId: entry.eventId,
-      athleteId: entry.athleteId,
-      athlete: entry.athlete,
-      priority: newPriority
-    }, newPriority);
+    changeEntryPriority(entryId, newPriority);
   };
 
   const handleRemove = (entryId: string) => {
@@ -109,6 +62,18 @@ const Priority: React.FC = () => {
   const getEventName = (event: Event) => {
     const genderLabel = event.gender === 'male' ? '男子' : event.gender === 'female' ? '女子' : '混合';
     return `${genderLabel} ${event.name}`;
+  };
+
+  const canMoveUp = (entry: typeof waitingEntries[0]) => {
+    if (entry.position <= 1) return false;
+    const prevEntry = waitingEntries.find(e => e.position === entry.position - 1);
+    return prevEntry ? prevEntry.priority === entry.priority : false;
+  };
+
+  const canMoveDown = (entry: typeof waitingEntries[0]) => {
+    if (entry.position >= waitingEntries.length) return false;
+    const nextEntry = waitingEntries.find(e => e.position === entry.position + 1);
+    return nextEntry ? nextEntry.priority === entry.priority : false;
   };
 
   const priorityRules = [
@@ -168,7 +133,7 @@ const Priority: React.FC = () => {
                 <li>• <strong>VIP</strong> 优先于所有其他优先级，按加入时间排序</li>
                 <li>• <strong>加急</strong> 优先于普通，按加入时间排序</li>
                 <li>• <strong>普通</strong> 按加入时间顺序排列</li>
-                <li>• 同优先级内按加入时间先后排序</li>
+                <li>• 同优先级内可手动调整顺序，不会被加入时间覆盖</li>
               </ul>
             </div>
           </div>
@@ -232,19 +197,19 @@ const Priority: React.FC = () => {
                     <div className="flex items-center justify-end gap-1">
                       <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden">
                         <button 
-                          onClick={() => handleMoveUp(entry.id, entry.position)}
-                          disabled={entry.position <= 1}
-                          className="p-2 hover:bg-slate-50 text-slate-500 hover:text-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          title="上移"
+                          onClick={() => handleMoveUp(entry.id)}
+                          disabled={!canMoveUp(entry)}
+                          className="p-2 hover:bg-slate-50 text-slate-500 hover:text-primary-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          title={canMoveUp(entry) ? '上移' : '无法上移（已到同优先级顶部）'}
                         >
                           <ArrowUp size={16} />
                         </button>
                         <div className="w-px bg-slate-200 h-full" />
                         <button 
-                          onClick={() => handleMoveDown(entry.id, entry.position)}
-                          disabled={entry.position >= waitingEntries.length}
-                          className="p-2 hover:bg-slate-50 text-slate-500 hover:text-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          title="下移"
+                          onClick={() => handleMoveDown(entry.id)}
+                          disabled={!canMoveDown(entry)}
+                          className="p-2 hover:bg-slate-50 text-slate-500 hover:text-primary-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          title={canMoveDown(entry) ? '下移' : '无法下移（已到同优先级底部）'}
                         >
                           <ArrowDown size={16} />
                         </button>

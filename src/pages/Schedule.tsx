@@ -1,20 +1,25 @@
 import React, { useState } from 'react';
-import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle } from 'lucide-react';
+import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle, PlusCircle, Building, Target, ChevronDown, ChevronRight } from 'lucide-react';
 import { useAppStore, useSchedulesWithDetails, useTracksWithVenue } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
-import { ScheduleStatus, Event } from '@/types';
+import { ScheduleStatus, Event, Venue, Track } from '@/types';
 import { formatTime, formatDate, createDateTime } from '@/utils/time';
-import { hasConflict } from '@/utils/conflict';
+import { isTimeOverlap } from '@/utils/conflict';
 
 const Schedule: React.FC = () => {
   const schedules = useSchedulesWithDetails();
   const tracks = useTracksWithVenue();
+  const venues = useAppStore(state => state.venues);
   const events = useAppStore(state => state.events);
   const createSchedule = useAppStore(state => state.createSchedule);
   const cancelSchedule = useAppStore(state => state.cancelSchedule);
+  const addVenue = useAppStore(state => state.addVenue);
+  const addTrack = useAppStore(state => state.addTrack);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isVenueModalOpen, setIsVenueModalOpen] = useState(false);
+  const [isTrackModalOpen, setIsTrackModalOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(formatDate(new Date()));
   const [selectedTrack, setSelectedTrack] = useState('');
   const [selectedEvent, setSelectedEvent] = useState('');
@@ -22,10 +27,29 @@ const Schedule: React.FC = () => {
   const [endTime, setEndTime] = useState('09:30');
   const [conflicts, setConflicts] = useState<string[]>([]);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  
+  const [expandedVenues, setExpandedVenues] = useState<Set<string>>(new Set(venues.map(v => v.id)));
+  const [selectedVenueForTrack, setSelectedVenueForTrack] = useState('');
+  const [newVenueName, setNewVenueName] = useState('');
+  const [newVenueLocation, setNewVenueLocation] = useState('');
+  const [newTrackName, setNewTrackName] = useState('');
+  const [newTrackType, setNewTrackType] = useState<'running' | 'field'>('running');
+  const [venueFormError, setVenueFormError] = useState('');
+  const [trackFormError, setTrackFormError] = useState('');
 
   const runningTracks = tracks.filter(t => t.type === 'running');
   const fieldTracks = tracks.filter(t => t.type === 'field');
   const activeSchedules = schedules.filter(s => s.status !== ScheduleStatus.CANCELLED);
+
+  const toggleVenue = (venueId: string) => {
+    const newExpanded = new Set(expandedVenues);
+    if (newExpanded.has(venueId)) {
+      newExpanded.delete(venueId);
+    } else {
+      newExpanded.add(venueId);
+    }
+    setExpandedVenues(newExpanded);
+  };
 
   const validateForm = () => {
     const errors: Record<string, string> = {};
@@ -47,7 +71,10 @@ const Schedule: React.FC = () => {
   };
 
   const checkForConflicts = () => {
-    if (!selectedTrack || !startTime || !endTime) return;
+    if (!selectedTrack || !startTime || !endTime) {
+      setConflicts([]);
+      return;
+    }
     
     const start = createDateTime(selectedDate, startTime);
     const end = createDateTime(selectedDate, endTime);
@@ -59,7 +86,7 @@ const Schedule: React.FC = () => {
       const sDate = formatDate(s.startTime);
       if (sDate !== selectedDate) return false;
       
-      return hasConflict(selectedTrack, start, end, schedules, s.id);
+      return isTimeOverlap(start, end, s.startTime, s.endTime);
     });
     
     setConflicts(conflictSchedules.map(c => `${c.event?.name} (${formatTime(c.startTime)}-${formatTime(c.endTime)})`));
@@ -105,6 +132,59 @@ const Schedule: React.FC = () => {
   const getEventCategory = (event: Event) => {
     const genderLabel = event.gender === 'male' ? '男子' : event.gender === 'female' ? '女子' : '混合';
     return `${genderLabel} ${event.name}`;
+  };
+
+  const handleAddVenue = () => {
+    if (!newVenueName.trim()) {
+      setVenueFormError('请输入场地名称');
+      return;
+    }
+    
+    addVenue({
+      name: newVenueName.trim(),
+      location: newVenueLocation.trim() || '',
+      trackCount: 0
+    });
+    
+    setIsVenueModalOpen(false);
+    setNewVenueName('');
+    setNewVenueLocation('');
+    setVenueFormError('');
+  };
+
+  const openAddTrackModal = (venueId: string) => {
+    setSelectedVenueForTrack(venueId);
+    setNewTrackName('');
+    setNewTrackType('running');
+    setTrackFormError('');
+    setIsTrackModalOpen(true);
+  };
+
+  const handleAddTrack = () => {
+    if (!newTrackName.trim()) {
+      setTrackFormError('请输入赛道/场地名称');
+      return;
+    }
+    
+    addTrack({
+      name: newTrackName.trim(),
+      type: newTrackType,
+      venueId: selectedVenueForTrack,
+      available: true
+    });
+    
+    if (!expandedVenues.has(selectedVenueForTrack)) {
+      setExpandedVenues(prev => new Set([...prev, selectedVenueForTrack]));
+    }
+    
+    setIsTrackModalOpen(false);
+    setNewTrackName('');
+    setSelectedVenueForTrack('');
+    setTrackFormError('');
+  };
+
+  const getTracksByVenue = (venueId: string) => {
+    return tracks.filter(t => t.venueId === venueId);
   };
 
   return (
@@ -173,56 +253,110 @@ const Schedule: React.FC = () => {
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-1 space-y-4">
           <div className="card p-4">
-            <h3 className="font-semibold text-slate-800 mb-4">径赛赛道</h3>
-            <div className="space-y-2">
-              {runningTracks.map(track => (
-                <div 
-                  key={track.id}
-                  className={`p-3 rounded-lg border-2 transition-all cursor-pointer ${
-                    selectedTrack === track.id 
-                      ? 'border-primary-500 bg-primary-50' 
-                      : 'border-transparent bg-slate-50 hover:bg-slate-100'
-                  }`}
-                  onClick={() => setSelectedTrack(track.id)}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-slate-800">{track.name}</span>
-                    {track.available ? (
-                      <span className="text-xs text-success">可用</span>
-                    ) : (
-                      <span className="text-xs text-warning">占用</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">{track.venue?.name}</p>
-                </div>
-              ))}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-slate-800">场地赛道</h3>
+              <button 
+                onClick={() => { setNewVenueName(''); setNewVenueLocation(''); setVenueFormError(''); setIsVenueModalOpen(true); }}
+                className="text-primary-600 hover:text-primary-700 text-sm font-medium flex items-center gap-1"
+              >
+                <PlusCircle size={16} />
+                新增场地
+              </button>
             </div>
-          </div>
-
-          <div className="card p-4">
-            <h3 className="font-semibold text-slate-800 mb-4">田赛场地</h3>
-            <div className="space-y-2">
-              {fieldTracks.map(track => (
-                <div 
-                  key={track.id}
-                  className={`p-3 rounded-lg border-2 transition-all cursor-pointer ${
-                    selectedTrack === track.id 
-                      ? 'border-primary-500 bg-primary-50' 
-                      : 'border-transparent bg-slate-50 hover:bg-slate-100'
-                  }`}
-                  onClick={() => setSelectedTrack(track.id)}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-slate-800">{track.name}</span>
-                    {track.available ? (
-                      <span className="text-xs text-success">可用</span>
-                    ) : (
-                      <span className="text-xs text-warning">占用</span>
+            
+            <div className="space-y-3">
+              {venues.map(venue => {
+                const venueTracks = getTracksByVenue(venue.id);
+                const isExpanded = expandedVenues.has(venue.id);
+                const runningVenueTracks = venueTracks.filter(t => t.type === 'running');
+                const fieldVenueTracks = venueTracks.filter(t => t.type === 'field');
+                
+                return (
+                  <div key={venue.id} className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div 
+                      className="flex items-center gap-2 p-3 bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors"
+                      onClick={() => toggleVenue(venue.id)}
+                    >
+                      {isExpanded ? <ChevronDown size={18} className="text-slate-500" /> : <ChevronRight size={18} className="text-slate-500" />}
+                      <Building size={18} className="text-primary-600" />
+                      <span className="font-medium text-slate-800 flex-1">{venue.name}</span>
+                      <span className="text-xs text-slate-500">{venueTracks.length} 条</span>
+                    </div>
+                    
+                    {isExpanded && (
+                      <div className="p-3 space-y-3">
+                        {runningVenueTracks.length > 0 && (
+                          <div>
+                            <p className="text-xs text-slate-500 mb-2 font-medium">径赛赛道</p>
+                            <div className="space-y-1">
+                              {runningVenueTracks.map(track => (
+                                <div 
+                                  key={track.id}
+                                  className={`p-2 rounded-lg border-2 transition-all cursor-pointer ${
+                                    selectedTrack === track.id 
+                                      ? 'border-primary-500 bg-primary-50' 
+                                      : 'border-transparent bg-slate-50 hover:bg-slate-100'
+                                  }`}
+                                  onClick={() => setSelectedTrack(track.id)}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm font-medium text-slate-800">{track.name}</span>
+                                    {track.available ? (
+                                      <span className="text-xs text-success">可用</span>
+                                    ) : (
+                                      <span className="text-xs text-warning">占用</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {fieldVenueTracks.length > 0 && (
+                          <div>
+                            <p className="text-xs text-slate-500 mb-2 font-medium">田赛场地</p>
+                            <div className="space-y-1">
+                              {fieldVenueTracks.map(track => (
+                                <div 
+                                  key={track.id}
+                                  className={`p-2 rounded-lg border-2 transition-all cursor-pointer ${
+                                    selectedTrack === track.id 
+                                      ? 'border-primary-500 bg-primary-50' 
+                                      : 'border-transparent bg-slate-50 hover:bg-slate-100'
+                                  }`}
+                                  onClick={() => setSelectedTrack(track.id)}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm font-medium text-slate-800">{track.name}</span>
+                                    {track.available ? (
+                                      <span className="text-xs text-success">可用</span>
+                                    ) : (
+                                      <span className="text-xs text-warning">占用</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {venueTracks.length === 0 && (
+                          <p className="text-sm text-slate-400 text-center py-2">暂无赛道</p>
+                        )}
+                        
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); openAddTrackModal(venue.id); }}
+                          className="w-full py-2 text-sm text-primary-600 hover:bg-primary-50 rounded-lg border border-dashed border-primary-300 transition-colors flex items-center justify-center gap-1"
+                        >
+                          <Plus size={14} />
+                          添加赛道
+                        </button>
+                      </div>
                     )}
                   </div>
-                  <p className="text-xs text-slate-500 mt-1">{track.venue?.name}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -441,6 +575,121 @@ const Schedule: React.FC = () => {
             >
               <Check size={18} />
               确认排期
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isVenueModalOpen} 
+        onClose={() => { setIsVenueModalOpen(false); setVenueFormError(''); }}
+        title="新增场地"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="label">场地名称 <span className="text-warning">*</span></label>
+            <input 
+              type="text" 
+              value={newVenueName}
+              onChange={e => { setNewVenueName(e.target.value); setVenueFormError(''); }}
+              placeholder="例如：主体育场"
+              className={`input ${venueFormError ? 'input-error' : ''}`}
+            />
+            {venueFormError && <p className="text-xs text-warning mt-1">{venueFormError}</p>}
+          </div>
+          <div>
+            <label className="label">位置/说明</label>
+            <input 
+              type="text" 
+              value={newVenueLocation}
+              onChange={e => setNewVenueLocation(e.target.value)}
+              placeholder="例如：东门入口旁"
+              className="input"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <button 
+              onClick={() => { setIsVenueModalOpen(false); setVenueFormError(''); }}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button onClick={handleAddVenue} className="btn-primary">
+              <Check size={18} />
+              确认添加
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={isTrackModalOpen} 
+        onClose={() => { setIsTrackModalOpen(false); setTrackFormError(''); }}
+        title="新增赛道/场地"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="label">所属场地</label>
+            <select 
+              value={selectedVenueForTrack}
+              onChange={e => setSelectedVenueForTrack(e.target.value)}
+              className="input"
+            >
+              {venues.map(venue => (
+                <option key={venue.id} value={venue.id}>{venue.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">类型</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => setNewTrackType('running')}
+                className={`p-4 rounded-xl border-2 transition-all ${
+                  newTrackType === 'running'
+                    ? 'border-accent bg-accent/5'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <Clock size={24} className={`mx-auto mb-2 ${newTrackType === 'running' ? 'text-accent' : 'text-slate-400'}`} />
+                <p className={`font-semibold ${newTrackType === 'running' ? 'text-accent' : 'text-slate-700'}`}>径赛赛道</p>
+                <p className={`text-xs ${newTrackType === 'running' ? 'text-accent/70' : 'text-slate-500'}`}>跑步、跨栏、接力等</p>
+              </button>
+              <button
+                onClick={() => setNewTrackType('field')}
+                className={`p-4 rounded-xl border-2 transition-all ${
+                  newTrackType === 'field'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <Target size={24} className={`mx-auto mb-2 ${newTrackType === 'field' ? 'text-primary-600' : 'text-slate-400'}`} />
+                <p className={`font-semibold ${newTrackType === 'field' ? 'text-primary-600' : 'text-slate-700'}`}>田赛场地</p>
+                <p className={`text-xs ${newTrackType === 'field' ? 'text-primary-600/70' : 'text-slate-500'}`}>跳远、跳高、投掷等</p>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="label">名称 <span className="text-warning">*</span></label>
+            <input 
+              type="text" 
+              value={newTrackName}
+              onChange={e => { setNewTrackName(e.target.value); setTrackFormError(''); }}
+              placeholder={newTrackType === 'running' ? '例如：第1跑道' : '例如：跳高高地'}
+              className={`input ${trackFormError ? 'input-error' : ''}`}
+            />
+            {trackFormError && <p className="text-xs text-warning mt-1">{trackFormError}</p>}
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+            <button 
+              onClick={() => { setIsTrackModalOpen(false); setTrackFormError(''); }}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button onClick={handleAddTrack} className="btn-primary">
+              <Check size={18} />
+              确认添加
             </button>
           </div>
         </div>

@@ -87,6 +87,7 @@ export interface QueueEntry {
   status: QueueStatus;
   position: number;
   joinTime: Date;
+  sortOrder: number;
   calledTime?: Date;
   event?: Event;
 }
@@ -126,11 +127,14 @@ export interface AppStore extends AppState {
   checkAllConflicts: () => Conflict[];
   resolveConflict: (conflictId: string, keepScheduleId: string) => void;
   
-  addToQueue: (entry: Omit<QueueEntry, 'id' | 'position' | 'joinTime' | 'status'>) => void;
+  addToQueue: (entry: Omit<QueueEntry, 'id' | 'position' | 'joinTime' | 'status' | 'sortOrder'>) => void;
   callNextNumber: (eventId: string) => QueueEntry | null;
   updateQueueStatus: (entryId: string, status: QueueStatus) => void;
-  insertWithPriority: (entry: Omit<QueueEntry, 'id' | 'position' | 'joinTime' | 'status'>, priority: Priority) => void;
+  insertWithPriority: (entry: Omit<QueueEntry, 'id' | 'position' | 'joinTime' | 'status' | 'sortOrder'>, priority: Priority) => void;
   removeFromQueue: (entryId: string) => void;
+  moveQueueEntryUp: (entryId: string) => void;
+  moveQueueEntryDown: (entryId: string) => void;
+  changeEntryPriority: (entryId: string, priority: Priority) => void;
   
   addResult: (result: Omit<Result, 'id'>) => void;
   updateResult: (id: string, result: Partial<Omit<Result, 'id'>>) => void;

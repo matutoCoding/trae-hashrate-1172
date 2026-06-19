@@ -11,7 +11,10 @@ import {
   insertWithPriority as insertWithPriorityUtil,
   callNextNumber as callNextNumberUtil,
   updateQueueEntryStatus,
-  removeFromQueue as removeFromQueueUtil
+  removeFromQueue as removeFromQueueUtil,
+  moveEntryUp as moveEntryUpUtil,
+  moveEntryDown as moveEntryDownUtil,
+  changeEntryPriority as changeEntryPriorityUtil
 } from '@/utils/queue';
 import { 
   generateMockVenues, generateMockTracks, generateMockEvents,
@@ -153,27 +156,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }));
   },
 
+  moveQueueEntryUp: (entryId: string) => {
+    set(state => ({
+      queueEntries: moveEntryUpUtil(state.queueEntries, entryId)
+    }));
+  },
+
+  moveQueueEntryDown: (entryId: string) => {
+    set(state => ({
+      queueEntries: moveEntryDownUtil(state.queueEntries, entryId)
+    }));
+  },
+
+  changeEntryPriority: (entryId: string, priority: Priority) => {
+    set(state => ({
+      queueEntries: changeEntryPriorityUtil(state.queueEntries, entryId, priority)
+    }));
+  },
+
   addResult: (result: Omit<Result, 'id'>) => {
-    const state = get();
-    const eventResults = state.results.filter(r => r.eventId === result.eventId);
-    
-    const allValues = [...eventResults.map(r => r.resultValue), result.resultValue];
-    const sorted = [...allValues].sort((a, b) => a - b);
-    const rank = sorted.indexOf(result.resultValue) + 1;
-    
     const newResult: Result = {
       ...result,
       id: generateId(),
-      rank
+      rank: 0
     };
     
-    const updatedResults = eventResults.map(r => {
-      const newRank = sorted.indexOf(r.resultValue) + 1;
-      return { ...r, rank: newRank };
-    });
-    
     set(state => ({
-      results: [...state.results.filter(r => r.eventId !== result.eventId), ...updatedResults, newResult]
+      results: [...state.results, newResult]
     }));
     
     get().calculateRanks(result.eventId);
@@ -208,12 +217,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   calculateRanks: (eventId: string) => {
     const state = get();
+    const event = state.events.find(e => e.id === eventId);
     const eventResults = state.results.filter(r => r.eventId === eventId);
+    
+    const isFieldEvent = event?.type === 'field';
     
     const sorted = [...eventResults].sort((a, b) => {
       if (a.status === EntryStatus.DISQUALIFIED) return 1;
       if (b.status === EntryStatus.DISQUALIFIED) return -1;
-      return a.resultValue - b.resultValue;
+      
+      if (isFieldEvent) {
+        return b.resultValue - a.resultValue;
+      } else {
+        return a.resultValue - b.resultValue;
+      }
     });
     
     const updatedResults = sorted.map((r, index) => ({
