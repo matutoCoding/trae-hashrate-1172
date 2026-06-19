@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Plus, Calendar, Clock, MapPin, Trash2, Edit2, X, Check, AlertCircle, PlusCircle, Building, Target, ChevronDown, ChevronRight, AlertTriangle, CheckCircle, Users, LayoutGrid, Eye } from 'lucide-react';
 import { useAppStore, useSchedulesWithDetails, useTracksWithVenue } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -56,9 +56,10 @@ const Schedule: React.FC = () => {
   interface HeatPreview {
     heatNumber: number;
     trackId: string;
+    trackName: string;
     startTime: string;
     endTime: string;
-    athletes: Athlete[];
+    athletes: { athlete: Athlete; laneNumber: number; trackId: string; trackName: string }[];
     hasConflict: boolean;
     conflictReason?: string;
   }
@@ -98,20 +99,19 @@ const Schedule: React.FC = () => {
     if (!event) return;
 
     validHeats.forEach(heat => {
-      createSchedule({
-        eventId: event.id,
-        trackId: heat.trackId,
-        startTime: createDateTime(batchDate, heat.startTime),
-        endTime: createDateTime(batchDate, heat.endTime),
-        status: ScheduleStatus.SCHEDULED
-      });
-      
-      // 同时把运动员加入该项目检录队列
-      heat.athletes.forEach(athlete => {
+      heat.athletes.forEach(a => {
+        createSchedule({
+          eventId: event.id,
+          trackId: a.trackId,
+          startTime: createDateTime(batchDate, heat.startTime),
+          endTime: createDateTime(batchDate, heat.endTime),
+          status: ScheduleStatus.SCHEDULED
+        });
+        
         addToQueue({
           eventId: event.id,
-          athleteId: athlete.id,
-          athlete,
+          athleteId: a.athlete.id,
+          athlete: a.athlete,
           priority: 'NORMAL' as any
         });
       });
@@ -147,25 +147,37 @@ const Schedule: React.FC = () => {
     const selectedAthletes = athletes.filter(a => batchSelectedAthleteIds.has(a.id));
     if (selectedAthletes.length === 0) return [];
 
-    const selectedTracks = runningTracks;
     const numHeats = Math.ceil(selectedAthletes.length / batchAthletesPerHeat);
     
     const startParts = batchStartTime.split(':').map(Number);
     let currentMinutes = startParts[0] * 60 + startParts[1];
     
-    const startTrackIdx = selectedTracks.findIndex(t => t.id === batchStartTrackId);
+    const startTrackIdx = runningTracks.findIndex(t => t.id === batchStartTrackId);
     if (startTrackIdx === -1) return [];
 
     const previews: HeatPreview[] = [];
     let athleteIdx = 0;
 
     for (let h = 0; h < numHeats; h++) {
-      const heatAthletes = selectedAthletes.slice(athleteIdx, athleteIdx + batchAthletesPerHeat);
+      const heatAthletesRaw = selectedAthletes.slice(athleteIdx, athleteIdx + batchAthletesPerHeat);
       athleteIdx += batchAthletesPerHeat;
 
-      const trackIdx = startTrackIdx + (h % Math.max(1, selectedTracks.length - startTrackIdx));
-      const track = selectedTracks[trackIdx];
-      if (!track) continue;
+      const baseTrack = runningTracks[startTrackIdx];
+      if (!baseTrack) continue;
+
+      const venueTracks = runningTracks.filter(t => t.venueId === baseTrack.venueId);
+      const athletesWithLanes = heatAthletesRaw.map((a, i) => {
+        const assignedTrack = venueTracks[i] || baseTrack;
+        return {
+          athlete: a,
+          laneNumber: i + 1,
+          trackId: assignedTrack.id,
+          trackName: assignedTrack.name
+        };
+      });
+
+      const primaryTrackId = athletesWithLanes[0]?.trackId || baseTrack.id;
+      const primaryTrackName = athletesWithLanes[0]?.trackName || baseTrack.name;
       
       const heatStart = currentMinutes;
       const heatEnd = heatStart + batchHeatDuration;
@@ -184,35 +196,42 @@ const Schedule: React.FC = () => {
       const heatStartDate = createDateTime(batchDate, startStr);
       const heatEndDate = createDateTime(batchDate, endStr);
 
+      const usedTrackIds = new Set(athletesWithLanes.map(a => a.trackId));
+
       for (const s of activeSchedules) {
-        if (s.trackId === track.id && s.status !== ScheduleStatus.CANCELLED) {
+        if (usedTrackIds.has(s.trackId) && s.status !== ScheduleStatus.CANCELLED) {
           if (isTimeOverlap(heatStartDate, heatEndDate, s.startTime, s.endTime)) {
             hasConflict = true;
             const eventName = s.event ? getEventName(s.event) : '未知项目';
-            conflictReason = `与 ${eventName} (${formatTime(s.startTime)}-${formatTime(s.endTime)}) 时间冲突`;
+            conflictReason = `与 ${eventName} 在 ${tracks.find(t => t.id === s.trackId)?.name} (${formatTime(s.startTime)}-${formatTime(s.endTime)}) 时间冲突`;
             break;
           }
         }
       }
 
       for (const p of previews) {
-        if (p.trackId === track.id) {
-          const pStart = createDateTime(batchDate, p.startTime);
-          const pEnd = createDateTime(batchDate, p.endTime);
-          if (isTimeOverlap(heatStartDate, heatEndDate, pStart, pEnd)) {
-            hasConflict = true;
-            conflictReason = `与第 ${p.heatNumber} 组在 ${track.name} 时间冲突`;
-            break;
+        const prevTrackIds = new Set(p.athletes.map(a => a.trackId));
+        for (const tid of usedTrackIds) {
+          if (prevTrackIds.has(tid)) {
+            const pStart = createDateTime(batchDate, p.startTime);
+            const pEnd = createDateTime(batchDate, p.endTime);
+            if (isTimeOverlap(heatStartDate, heatEndDate, pStart, pEnd)) {
+              hasConflict = true;
+              conflictReason = `与第 ${p.heatNumber} 组在 ${tracks.find(t => t.id === tid)?.name} 时间冲突`;
+              break;
+            }
           }
         }
+        if (hasConflict) break;
       }
 
       previews.push({
         heatNumber: h + 1,
-        trackId: track.id,
+        trackId: primaryTrackId,
+        trackName: primaryTrackName,
         startTime: startStr,
         endTime: endStr,
-        athletes: heatAthletes,
+        athletes: athletesWithLanes,
         hasConflict,
         conflictReason
       });
@@ -221,7 +240,7 @@ const Schedule: React.FC = () => {
     }
 
     return previews;
-  }, [batchPreviewGenerated, batchEventId, batchStartTrackId, batchStartTime, batchDate, batchAthletesPerHeat, batchHeatDuration, batchGapMinutes, batchSelectedAthleteIds, athletes, activeSchedules, runningTracks]);
+  }, [batchPreviewGenerated, batchEventId, batchStartTrackId, batchStartTime, batchDate, batchAthletesPerHeat, batchHeatDuration, batchGapMinutes, batchSelectedAthleteIds, athletes, activeSchedules, runningTracks, tracks]);
 
   const TIMELINE_START_HOUR = 6;
   const TIMELINE_END_HOUR = 22;
@@ -388,8 +407,17 @@ const Schedule: React.FC = () => {
       return isTimeOverlap(start, end, s.startTime, s.endTime);
     });
     
-    setConflicts(conflictSchedules.map(c => `${c.event?.name} (${formatTime(c.startTime)}-${formatTime(c.endTime)})`));
+    setConflicts(conflictSchedules.map(c => {
+      const eventName = c.event ? getEventName(c.event) : '未知项目';
+      return `${eventName} (${formatTime(c.startTime)}-${formatTime(c.endTime)})`;
+    }));
   };
+
+  useEffect(() => {
+    if (isModalOpen) {
+      checkForConflicts();
+    }
+  }, [selectedDate, selectedTrack, startTime, endTime, isModalOpen]);
 
   const handleCreateSchedule = () => {
     if (!validateForm()) return;
@@ -999,7 +1027,7 @@ const Schedule: React.FC = () => {
               <input 
                 type="date" 
                 value={selectedDate}
-                onChange={e => { setSelectedDate(e.target.value); checkForConflicts(); }}
+                onChange={e => setSelectedDate(e.target.value)}
                 className="input"
               />
             </div>
@@ -1007,7 +1035,7 @@ const Schedule: React.FC = () => {
               <label className="label">赛道 <span className="text-warning">*</span></label>
               <select 
                 value={selectedTrack}
-                onChange={e => { setSelectedTrack(e.target.value); checkForConflicts(); }}
+                onChange={e => setSelectedTrack(e.target.value)}
                 className={`input ${formErrors.track ? 'input-error' : ''}`}
               >
                 <option value="">请选择赛道</option>
@@ -1053,7 +1081,7 @@ const Schedule: React.FC = () => {
               <input 
                 type="time" 
                 value={startTime}
-                onChange={e => { setStartTime(e.target.value); checkForConflicts(); }}
+                onChange={e => setStartTime(e.target.value)}
                 className={`input ${formErrors.startTime ? 'input-error' : ''}`}
               />
               {formErrors.startTime && <p className="text-xs text-warning mt-1">{formErrors.startTime}</p>}
@@ -1063,7 +1091,7 @@ const Schedule: React.FC = () => {
               <input 
                 type="time" 
                 value={endTime}
-                onChange={e => { setEndTime(e.target.value); checkForConflicts(); }}
+                onChange={e => setEndTime(e.target.value)}
                 className={`input ${formErrors.endTime ? 'input-error' : ''}`}
               />
               {formErrors.endTime && <p className="text-xs text-warning mt-1">{formErrors.endTime}</p>}
@@ -1393,7 +1421,7 @@ const Schedule: React.FC = () => {
                         </span>
                         <span className="font-medium text-slate-800">第 {heat.heatNumber} 组</span>
                         <span className="text-xs text-slate-500">
-                          {tracks.find(t => t.id === heat.trackId)?.name}
+                          {heat.trackName}
                         </span>
                       </div>
                       <div className="text-xs text-slate-600 font-mono">
@@ -1402,9 +1430,11 @@ const Schedule: React.FC = () => {
                     </div>
                     <div className="flex flex-wrap gap-1.5 mb-1">
                       {heat.athletes.map(a => (
-                        <span key={a.id} className="inline-flex items-center px-2 py-0.5 bg-white rounded text-xs text-slate-700 border border-slate-200">
-                          <span className="font-mono text-slate-400 mr-1">{a.bibNumber}</span>
-                          {a.name}
+                        <span key={a.athlete.id} className="inline-flex items-center px-2 py-0.5 bg-white rounded text-xs text-slate-700 border border-slate-200">
+                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-100 text-primary-700 text-[10px] font-bold mr-1.5">{a.laneNumber}</span>
+                          <span className="font-mono text-slate-400 mr-1">{a.athlete.bibNumber}</span>
+                          {a.athlete.name}
+                          <span className="text-slate-400 ml-1.5 text-[10px]">{a.trackName}</span>
                         </span>
                       ))}
                     </div>

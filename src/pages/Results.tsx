@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Trophy, Medal, Award, Plus, Edit2, Trash2, Download, Filter, Upload, Info, CheckCircle, AlertCircle, Eye, EyeOff, Send, RotateCcw, ChevronRight, ArrowRight, Users } from 'lucide-react';
-import { useAppStore } from '@/store/useAppStore';
+import { useAppStore, useQueueWithDetails } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Modal } from '@/components/Modal';
 import { Result, Event, EventType, EntryStatus, Athlete, QueueStatus, Priority } from '@/types';
@@ -38,6 +38,7 @@ const Results: React.FC = () => {
   const unpublishResults = useAppStore(state => state.unpublishResults);
   const addEvent = useAppStore(state => state.addEvent);
   const addQueueEntry = useAppStore(state => state.addToQueue);
+  const queueEntries = useQueueWithDetails();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
@@ -51,7 +52,9 @@ const Results: React.FC = () => {
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advancingEventId, setAdvancingEventId] = useState<string>('');
   const [advanceCount, setAdvanceCount] = useState<number>(8);
-  const [advanceMode, setAdvanceMode] = useState<'count' | 'percent'>('count');
+  const [advanceMode, setAdvanceMode] = useState<'count' | 'percent' | 'performance'>('count');
+  const [advancePerformanceThreshold, setAdvancePerformanceThreshold] = useState<number>(0);
+  const [advancePerformanceDirection, setAdvancePerformanceDirection] = useState<'upper' | 'lower'>('upper');
   const [nextRoundName, setNextRoundName] = useState<string>('');
   const [formData, setFormData] = useState({
     eventId: '',
@@ -61,6 +64,33 @@ const Results: React.FC = () => {
     rank: 0,
     notes: ''
   });
+
+  const availableAthletesForEvent = useMemo(() => {
+    const targetEventId = formData.eventId;
+    if (!targetEventId) return athletes;
+    
+    const eventQueue = queueEntries.filter(q => q.eventId === targetEventId);
+    const checkedInIds = new Set(
+      eventQueue
+        .filter(q => q.status === QueueStatus.CHECKED_IN || q.status === QueueStatus.CALLED)
+        .map(q => q.athleteId)
+    );
+    const missedIds = new Set(
+      eventQueue
+        .filter(q => q.status === QueueStatus.MISSED)
+        .map(q => q.athleteId)
+    );
+    const alreadyRecordedIds = new Set(
+      results.filter(r => r.eventId === targetEventId).map(r => r.athleteId)
+    );
+
+    return athletes.filter(a => {
+      if (alreadyRecordedIds.has(a.id)) return false;
+      if (missedIds.has(a.id)) return false;
+      if (checkedInIds.size > 0) return checkedInIds.has(a.id);
+      return true;
+    });
+  }, [athletes, formData.eventId, queueEntries, results]);
 
   const filteredResults = useMemo(() => {
     if (!selectedEvent) return results;
@@ -336,13 +366,23 @@ const Results: React.FC = () => {
 
   const advancingQualified = useMemo(() => {
     if (advancingEventResults.length === 0) return [];
+    if (advanceMode === 'performance') {
+      return advancingEventResults
+        .filter(r => {
+          if (advancePerformanceDirection === 'upper') {
+            return r.resultValue <= advancePerformanceThreshold;
+          }
+          return r.resultValue >= advancePerformanceThreshold;
+        })
+        .sort((a, b) => a.rank - b.rank);
+    }
     let count = advanceCount;
     if (advanceMode === 'percent') {
       count = Math.ceil(advancingEventResults.length * (advanceCount / 100));
     }
     count = Math.min(count, advancingEventResults.length);
     return advancingEventResults.slice(0, count);
-  }, [advancingEventResults, advanceCount, advanceMode]);
+  }, [advancingEventResults, advanceCount, advanceMode, advancePerformanceThreshold, advancePerformanceDirection]);
 
   const handleConfirmAdvance = () => {
     if (!advancingEvent || advancingQualified.length === 0) return;
@@ -768,12 +808,15 @@ const Results: React.FC = () => {
               className="input"
             >
               <option value="">请选择运动员</option>
-              {athletes.map(athlete => (
+              {availableAthletesForEvent.map(athlete => (
                 <option key={athlete.id} value={athlete.id}>
                   {athlete.bibNumber} - {athlete.name} ({athlete.team})
                 </option>
               ))}
             </select>
+            {formData.eventId && availableAthletesForEvent.length === 0 && (
+              <p className="text-xs text-slate-500 mt-1">该项目暂无可录入成绩的运动员（缺席者已排除）</p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -1155,26 +1198,66 @@ const Results: React.FC = () => {
             <div>
               <label className="label">晋级规则</label>
               <div className="flex gap-2">
-                <select 
+                <select
                   value={advanceMode}
-                  onChange={e => setAdvanceMode(e.target.value as 'count' | 'percent')}
+                  onChange={e => setAdvanceMode(e.target.value as 'count' | 'percent' | 'performance')}
                   className="input flex-shrink-0 w-28"
                 >
                   <option value="count">按人数</option>
                   <option value="percent">按比例</option>
+                  <option value="performance">按成绩</option>
                 </select>
-                <input 
-                  type="number"
-                  min={1}
-                  max={advanceMode === 'percent' ? 100 : advancingEventResults.length}
-                  value={advanceCount}
-                  onChange={e => setAdvanceCount(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="input"
-                />
-                <span className="flex items-center text-slate-500 text-sm">
-                  {advanceMode === 'count' ? '人' : '%'}
-                </span>
+                {advanceMode !== 'performance' && (
+                  <>
+                    <input
+                      type="number"
+                      min={1}
+                      max={advanceMode === 'percent' ? 100 : advancingEventResults.length}
+                      value={advanceCount}
+                      onChange={e => setAdvanceCount(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="input"
+                    />
+                    <span className="flex items-center text-slate-500 text-sm">
+                      {advanceMode === 'count' ? '人' : '%'}
+                    </span>
+                  </>
+                )}
               </div>
+              {advanceMode === 'performance' && (
+                <div className="mt-2 space-y-2">
+                  <input
+                    type="number"
+                    value={advancePerformanceThreshold || ''}
+                    onChange={e => setAdvancePerformanceThreshold(parseFloat(e.target.value) || 0)}
+                    className="input"
+                    placeholder="输入成绩阈值"
+                  />
+                  <div className="flex gap-4">
+                    <label className="flex items-center gap-1.5 text-sm text-slate-700 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="performanceDirection"
+                        value="upper"
+                        checked={advancePerformanceDirection === 'upper'}
+                        onChange={() => setAdvancePerformanceDirection('upper')}
+                        className="accent-primary-600"
+                      />
+                      成绩上限（径赛：用时不超过此值）
+                    </label>
+                    <label className="flex items-center gap-1.5 text-sm text-slate-700 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="performanceDirection"
+                        value="lower"
+                        checked={advancePerformanceDirection === 'lower'}
+                        onChange={() => setAdvancePerformanceDirection('lower')}
+                        className="accent-primary-600"
+                      />
+                      成绩下限（田赛：成绩不低于此值）
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
